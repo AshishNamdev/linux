@@ -39,14 +39,12 @@ Status: in development
 #include <linux/poll.h>
 
 struct serial2002_range_table_t {
-
 	/*  HACK... */
 	int length;
 	struct comedi_krange range;
 };
 
 struct serial2002_private {
-
 	int port;		/*  /dev/ttyS<port> */
 	int speed;		/*  baudrate */
 	struct file *tty;
@@ -145,8 +143,8 @@ static void serial2002_tty_read_poll_wait(struct file *f, int timeout)
 			break;
 		}
 		do_gettimeofday(&now);
-		elapsed = (1000000 * (now.tv_sec - start.tv_sec) +
-			  now.tv_usec - start.tv_usec);
+		elapsed = 1000000 * (now.tv_sec - start.tv_sec) +
+			  now.tv_usec - start.tv_usec;
 		if (elapsed > timeout)
 			break;
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -300,7 +298,6 @@ static struct serial_data serial2002_read(struct file *f, int timeout)
 		}
 	}
 	return result;
-
 }
 
 static void serial2002_write(struct file *f, struct serial_data data)
@@ -742,7 +739,7 @@ static int serial2002_attach(struct comedi_device *dev,
 	/* digital output subdevice */
 	s = &dev->subdevices[1];
 	s->type		= COMEDI_SUBD_DO;
-	s->subdev_flags	= SDF_WRITEABLE;
+	s->subdev_flags	= SDF_WRITABLE;
 	s->n_chan	= 0;
 	s->maxdata	= 1;
 	s->range_table	= &range_digital;
@@ -760,7 +757,7 @@ static int serial2002_attach(struct comedi_device *dev,
 	/* analog output subdevice */
 	s = &dev->subdevices[3];
 	s->type		= COMEDI_SUBD_AO;
-	s->subdev_flags	= SDF_WRITEABLE;
+	s->subdev_flags	= SDF_WRITABLE;
 	s->n_chan	= 0;
 	s->maxdata	= 1;
 	s->range_table	= NULL;

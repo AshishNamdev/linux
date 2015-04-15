@@ -53,13 +53,17 @@
 
 #define KVM_ARCH_WANT_MMU_NOTIFIER
 
-struct kvm;
 extern int kvm_unmap_hva(struct kvm *kvm, unsigned long hva);
 extern int kvm_unmap_hva_range(struct kvm *kvm,
 			       unsigned long start, unsigned long end);
-extern int kvm_age_hva(struct kvm *kvm, unsigned long hva);
+extern int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
 extern int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 extern void kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
+
+static inline void kvm_arch_mmu_notifier_invalidate_page(struct kvm *kvm,
+							 unsigned long address)
+{
+}
 
 #define HPTEG_CACHE_NUM			(1 << 15)
 #define HPTEG_HASH_BITS_PTE		13
@@ -75,10 +79,6 @@ extern void kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
 
 /* Physical Address Mask - allowed range of real mode RAM access */
 #define KVM_PAM			0x0fffffffffffffffULL
-
-struct kvm;
-struct kvm_run;
-struct kvm_vcpu;
 
 struct lppaca;
 struct slb_shadow;
@@ -107,6 +107,7 @@ struct kvm_vcpu_stat {
 	u32 emulated_inst_exits;
 	u32 dec_exits;
 	u32 ext_intr_exits;
+	u32 halt_successful_poll;
 	u32 halt_wakeup;
 	u32 dbell_exits;
 	u32 gdbell_exits;
@@ -144,6 +145,7 @@ enum kvm_exit_types {
 	EMULATED_TLBWE_EXITS,
 	EMULATED_RFI_EXITS,
 	EMULATED_RFCI_EXITS,
+	EMULATED_RFDI_EXITS,
 	DEC_EXITS,
 	EXT_INTR_EXITS,
 	HALT_WAKEUP,
@@ -179,11 +181,6 @@ struct kvmppc_spapr_tce_table {
 	struct page *pages[0];
 };
 
-struct kvm_rma_info {
-	atomic_t use_count;
-	unsigned long base_pfn;
-};
-
 /* XICS components, defined in book3s_xics.c */
 struct kvmppc_xics;
 struct kvmppc_icp;
@@ -213,16 +210,9 @@ struct revmap_entry {
 #define KVMPPC_RMAP_PRESENT	0x100000000ul
 #define KVMPPC_RMAP_INDEX	0xfffffffful
 
-/* Low-order bits in memslot->arch.slot_phys[] */
-#define KVMPPC_PAGE_ORDER_MASK	0x1f
-#define KVMPPC_PAGE_NO_CACHE	HPTE_R_I	/* 0x20 */
-#define KVMPPC_PAGE_WRITETHRU	HPTE_R_W	/* 0x40 */
-#define KVMPPC_GOT_PAGE		0x80
-
 struct kvm_arch_memory_slot {
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	unsigned long *rmap;
-	unsigned long *slot_phys;
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 };
 
@@ -241,14 +231,12 @@ struct kvm_arch {
 	struct kvm_rma_info *rma;
 	unsigned long vrma_slb_v;
 	int rma_setup_done;
-	int using_mmu_notifiers;
 	u32 hpt_order;
 	atomic_t vcpus_running;
 	u32 online_vcores;
 	unsigned long hpt_npte;
 	unsigned long hpt_mask;
 	atomic_t hpte_mod_interest;
-	spinlock_t slot_phys_lock;
 	cpumask_t need_tlb_flush;
 	int hpt_cma_alloc;
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
@@ -296,6 +284,7 @@ struct kvmppc_vcore {
 	struct list_head runnable_threads;
 	spinlock_t lock;
 	wait_queue_head_t wq;
+	spinlock_t stoltb_lock;	/* protects stolen_tb and preempt_tb */
 	u64 stolen_tb;
 	u64 preempt_tb;
 	struct kvm_vcpu *runner;
@@ -307,6 +296,7 @@ struct kvmppc_vcore {
 	ulong dpdes;		/* doorbell state (POWER8) */
 	void *mpp_buffer; /* Micro Partition Prefetch buffer */
 	bool mpp_buffer_is_valid;
+	ulong conferring_threads;
 };
 
 #define VCORE_ENTRY_COUNT(vc)	((vc)->entry_exit_count & 0xff)
@@ -589,8 +579,6 @@ struct kvm_vcpu_arch {
 	u32 crit_save;
 	/* guest debug registers*/
 	struct debug_reg dbg_reg;
-	/* hardware visible debug registers when in guest state */
-	struct debug_reg shadow_dbg_reg;
 #endif
 	gpa_t paddr_accessed;
 	gva_t vaddr_accessed;
@@ -612,7 +600,6 @@ struct kvm_vcpu_arch {
 	u32 cpr0_cfgaddr; /* holds the last set cpr0_cfgaddr */
 
 	struct hrtimer dec_timer;
-	struct tasklet_struct tasklet;
 	u64 dec_jiffies;
 	u64 dec_expires;
 	unsigned long pending_exceptions;
@@ -666,6 +653,8 @@ struct kvm_vcpu_arch {
 	spinlock_t tbacct_lock;
 	u64 busy_stolen;
 	u64 busy_preempt;
+
+	u32 emul_inst;
 #endif
 };
 
@@ -686,5 +675,13 @@ struct kvm_vcpu_arch {
 
 #define __KVM_HAVE_ARCH_WQP
 #define __KVM_HAVE_CREATE_DEVICE
+
+static inline void kvm_arch_hardware_disable(void) {}
+static inline void kvm_arch_hardware_unsetup(void) {}
+static inline void kvm_arch_sync_events(struct kvm *kvm) {}
+static inline void kvm_arch_memslots_updated(struct kvm *kvm) {}
+static inline void kvm_arch_flush_shadow_all(struct kvm *kvm) {}
+static inline void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu) {}
+static inline void kvm_arch_exit(void) {}
 
 #endif /* __POWERPC_KVM_HOST_H__ */

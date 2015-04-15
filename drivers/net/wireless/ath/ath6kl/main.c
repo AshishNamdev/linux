@@ -225,7 +225,7 @@ int ath6kl_diag_write32(struct ath6kl *ar, u32 address, __le32 value)
 	ret = ath6kl_hif_diag_write32(ar, address, value);
 
 	if (ret) {
-		ath6kl_err("failed to write 0x%x during diagnose window to 0x%d\n",
+		ath6kl_err("failed to write 0x%x during diagnose window to 0x%x\n",
 			   address, value);
 		return ret;
 	}
@@ -488,7 +488,6 @@ void ath6kl_connect_ap_mode_sta(struct ath6kl_vif *vif, u16 aid, u8 *mac_addr,
 
 	sinfo.assoc_req_ies = ies;
 	sinfo.assoc_req_ies_len = ies_len;
-	sinfo.filled |= STATION_INFO_ASSOC_REQ_IES;
 
 	cfg80211_new_sta(vif->ndev, mac_addr, &sinfo, GFP_KERNEL);
 

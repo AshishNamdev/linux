@@ -526,19 +526,25 @@ static unsigned int __startup_pirq(unsigned int irq)
 	pirq_query_unmask(irq);
 
 	rc = set_evtchn_to_irq(evtchn, irq);
-	if (rc != 0) {
-		pr_err("irq%d: Failed to set port to irq mapping (%d)\n",
-		       irq, rc);
-		xen_evtchn_close(evtchn);
-		return 0;
-	}
+	if (rc)
+		goto err;
+
 	bind_evtchn_to_cpu(evtchn, 0);
 	info->evtchn = evtchn;
+
+	rc = xen_evtchn_port_setup(info);
+	if (rc)
+		goto err;
 
 out:
 	unmask_evtchn(evtchn);
 	eoi_pirq(irq_get_irq_data(irq));
 
+	return 0;
+
+err:
+	pr_err("irq%d: Failed to set port to irq mapping (%d)\n", irq, rc);
+	xen_evtchn_close(evtchn);
 	return 0;
 }
 
@@ -900,8 +906,8 @@ static int bind_ipi_to_irq(unsigned int ipi, unsigned int cpu)
 	return irq;
 }
 
-static int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
-					  unsigned int remote_port)
+int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
+				   unsigned int remote_port)
 {
 	struct evtchn_bind_interdomain bind_interdomain;
 	int err;
@@ -914,6 +920,7 @@ static int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
 
 	return err ? : bind_evtchn_to_irq(bind_interdomain.local_port);
 }
+EXPORT_SYMBOL_GPL(bind_interdomain_evtchn_to_irq);
 
 static int find_virq(unsigned int virq, unsigned int cpu)
 {

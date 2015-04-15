@@ -10,7 +10,7 @@
 
 #define DRIVER_MAJOR		1
 #define DRIVER_MINOR		2
-#define DRIVER_PATCHLEVEL	0
+#define DRIVER_PATCHLEVEL	1
 
 /*
  * 1.1.1:
@@ -26,6 +26,8 @@
  * 1.2.0:
  * 	- object api exposed to userspace
  * 	- fermi,kepler,maxwell zbc
+ * 1.2.1:
+ *      - allow concurrent access to bo's mapped read/write.
  */
 
 #include <nvif/client.h>
@@ -78,7 +80,7 @@ enum nouveau_drm_handle {
 
 struct nouveau_cli {
 	struct nvif_client base;
-	struct nouveau_vm *vm; /*XXX*/
+	struct nvkm_vm *vm; /*XXX*/
 	struct list_head head;
 	struct mutex mutex;
 	void *abi16;
@@ -140,7 +142,7 @@ struct nouveau_drm {
 	/* context for accelerated drm-internal operations */
 	struct nouveau_channel *cechan;
 	struct nouveau_channel *channel;
-	struct nouveau_gpuobj *notify;
+	struct nvkm_gpuobj *notify;
 	struct nouveau_fbdev *fbcon;
 	struct nvif_object nvsw;
 	struct nvif_object ntfy;

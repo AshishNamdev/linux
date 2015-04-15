@@ -33,7 +33,7 @@
 #include <linux/pagemap.h>
 #include <linux/idr.h>
 #include <linux/sched.h>
-#include <linux/aio.h>
+#include <linux/uio.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -266,8 +266,8 @@ v9fs_direct_IO(int rw, struct kiocb *iocb, struct iov_iter *iter, loff_t pos)
 	 * Now that we do caching with cache mode enabled, We need
 	 * to support direct IO
 	 */
-	p9_debug(P9_DEBUG_VFS, "v9fs_direct_IO: v9fs_direct_IO (%s) off/no(%lld/%lu) EINVAL\n",
-		 iocb->ki_filp->f_path.dentry->d_name.name,
+	p9_debug(P9_DEBUG_VFS, "v9fs_direct_IO: v9fs_direct_IO (%pD) off/no(%lld/%lu) EINVAL\n",
+		 iocb->ki_filp,
 		 (long long)pos, iter->nr_segs);
 
 	return -EINVAL;

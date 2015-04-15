@@ -1,14 +1,14 @@
 #ifndef __NOUVEAU_DISPLAY_H__
 #define __NOUVEAU_DISPLAY_H__
 
-#include <subdev/vm.h>
+#include <subdev/mmu.h>
 
 #include "nouveau_drm.h"
 
 struct nouveau_framebuffer {
 	struct drm_framebuffer base;
 	struct nouveau_bo *nvbo;
-	struct nouveau_vma vma;
+	struct nvkm_vma vma;
 	u32 r_handle;
 	u32 r_format;
 	u32 r_pitch;
@@ -63,9 +63,8 @@ int  nouveau_display_create(struct drm_device *dev);
 void nouveau_display_destroy(struct drm_device *dev);
 int  nouveau_display_init(struct drm_device *dev);
 void nouveau_display_fini(struct drm_device *dev);
-int  nouveau_display_suspend(struct drm_device *dev);
-void nouveau_display_repin(struct drm_device *dev);
-void nouveau_display_resume(struct drm_device *dev);
+int  nouveau_display_suspend(struct drm_device *dev, bool runtime);
+void nouveau_display_resume(struct drm_device *dev, bool runtime);
 int  nouveau_display_vblank_enable(struct drm_device *, int);
 void nouveau_display_vblank_disable(struct drm_device *, int);
 int  nouveau_display_scanoutpos(struct drm_device *, int, unsigned int,

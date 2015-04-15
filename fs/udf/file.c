@@ -34,7 +34,7 @@
 #include <linux/errno.h>
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
-#include <linux/aio.h>
+#include <linux/uio.h>
 
 #include "udf_i.h"
 #include "udf_sb.h"
@@ -122,7 +122,7 @@ static ssize_t udf_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
 	int err, pos;
-	size_t count = iocb->ki_nbytes;
+	size_t count = iov_iter_count(from);
 	struct udf_inode_info *iinfo = UDF_I(inode);
 
 	mutex_lock(&inode->i_mutex);
@@ -223,11 +223,18 @@ out:
 
 static int udf_release_file(struct inode *inode, struct file *filp)
 {
-	if (filp->f_mode & FMODE_WRITE) {
+	if (filp->f_mode & FMODE_WRITE &&
+	    atomic_read(&inode->i_writecount) == 1) {
+		/*
+		 * Grab i_mutex to avoid races with writes changing i_size
+		 * while we are running.
+		 */
+		mutex_lock(&inode->i_mutex);
 		down_write(&UDF_I(inode)->i_data_sem);
 		udf_discard_prealloc(inode);
 		udf_truncate_tail_extent(inode);
 		up_write(&UDF_I(inode)->i_data_sem);
+		mutex_unlock(&inode->i_mutex);
 	}
 	return 0;
 }

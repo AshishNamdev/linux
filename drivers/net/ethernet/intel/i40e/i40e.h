@@ -87,11 +87,12 @@
 #define I40E_MINIMUM_FCOE             1 /* minimum number of QPs for FCoE */
 #endif /* I40E_FCOE */
 #define I40E_MAX_AQ_BUF_SIZE          4096
-#define I40E_AQ_LEN                   32
-#define I40E_AQ_WORK_LIMIT            16
+#define I40E_AQ_LEN                   256
+#define I40E_AQ_WORK_LIMIT            32
 #define I40E_MAX_USER_PRIORITY        8
 #define I40E_DEFAULT_MSG_ENABLE       4
 #define I40E_QUEUE_WAIT_RETRY_LIMIT   10
+#define I40E_INT_NAME_STR_LEN        (IFNAMSIZ + 9)
 
 #define I40E_NVM_VERSION_LO_SHIFT  0
 #define I40E_NVM_VERSION_LO_MASK   (0xff << I40E_NVM_VERSION_LO_SHIFT)
@@ -144,6 +145,10 @@ enum i40e_state_t {
 	__I40E_PTP_TX_IN_PROGRESS,
 	__I40E_BAD_EEPROM,
 	__I40E_DOWN_REQUESTED,
+	__I40E_FD_FLUSH_REQUESTED,
+	__I40E_RESET_FAILED,
+	__I40E_PORT_TX_SUSPENDED,
+	__I40E_VF_DISABLE,
 };
 
 enum i40e_interrupt_policy {
@@ -250,6 +255,11 @@ struct i40e_pf {
 	u16 fdir_pf_active_filters;
 	u16 fd_sb_cnt_idx;
 	u16 fd_atr_cnt_idx;
+	unsigned long fd_flush_timestamp;
+	u32 fd_flush_cnt;
+	u32 fd_add_err;
+	u32 fd_atr_cnt;
+	u32 fd_tcp_rule;
 
 #ifdef CONFIG_I40E_VXLAN
 	__be16  vxlan_ports[I40E_MAX_PF_UDP_OFFLOAD_PORTS];
@@ -260,9 +270,10 @@ struct i40e_pf {
 	u16 rx_itr_default;
 	u16 tx_itr_default;
 	u16 msg_enable;
-	char misc_int_name[IFNAMSIZ + 9];
+	char int_name[I40E_INT_NAME_STR_LEN];
 	u16 adminq_work_limit; /* num of admin receive queue desc to process */
-	int service_timer_period;
+	unsigned long service_timer_period;
+	unsigned long service_timer_previous;
 	struct timer_list service_timer;
 	struct work_struct service_task;
 
@@ -310,6 +321,7 @@ struct i40e_pf {
 	u32 tx_timeout_count;
 	u32 tx_timeout_recovery_level;
 	unsigned long tx_timeout_last_recovery;
+	u32 tx_sluggish_count;
 	u32 hw_csum_rx_error;
 	u32 led_status;
 	u16 corer_count; /* Core reset count */
@@ -514,7 +526,7 @@ struct i40e_q_vector {
 
 	cpumask_t affinity_mask;
 	struct rcu_head rcu;	/* to avoid race with update stats on free */
-	char name[IFNAMSIZ + 9];
+	char name[I40E_INT_NAME_STR_LEN];
 } ____cacheline_internodealigned_in_smp;
 
 /* lan device */
@@ -608,6 +620,7 @@ int i40e_add_del_fdir(struct i40e_vsi *vsi,
 void i40e_fdir_check_and_reenable(struct i40e_pf *pf);
 int i40e_get_current_fd_count(struct i40e_pf *pf);
 int i40e_get_cur_guaranteed_fd_count(struct i40e_pf *pf);
+int i40e_get_current_atr_cnt(struct i40e_pf *pf);
 bool i40e_set_ntuple(struct i40e_pf *pf, netdev_features_t features);
 void i40e_set_ethtool_ops(struct net_device *netdev);
 struct i40e_mac_filter *i40e_add_filter(struct i40e_vsi *vsi,

@@ -283,10 +283,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 		if (rval)
 			return rval;
 
-		rval = v4l2_subdev_call(sd, pad, get_crop, subdev_fh, crop);
-		if (rval != -ENOIOCTLCMD)
-			return rval;
-
 		memset(&sel, 0, sizeof(sel));
 		sel.which = crop->which;
 		sel.pad = crop->pad;
@@ -306,10 +302,6 @@ static long subdev_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 
 		rval = check_crop(sd, crop);
 		if (rval)
-			return rval;
-
-		rval = v4l2_subdev_call(sd, pad, set_crop, subdev_fh, crop);
-		if (rval != -ENOIOCTLCMD)
 			return rval;
 
 		memset(&sel, 0, sizeof(sel));
@@ -501,9 +493,18 @@ int v4l2_subdev_link_validate_default(struct v4l2_subdev *sd,
 				      struct v4l2_subdev_format *source_fmt,
 				      struct v4l2_subdev_format *sink_fmt)
 {
+	/* The width, height and code must match. */
 	if (source_fmt->format.width != sink_fmt->format.width
 	    || source_fmt->format.height != sink_fmt->format.height
 	    || source_fmt->format.code != sink_fmt->format.code)
+		return -EINVAL;
+
+	/* The field order must match, or the sink field order must be NONE
+	 * to support interlaced hardware connected to bridges that support
+	 * progressive formats only.
+	 */
+	if (source_fmt->format.field != sink_fmt->format.field &&
+	    sink_fmt->format.field != V4L2_FIELD_NONE)
 		return -EINVAL;
 
 	return 0;

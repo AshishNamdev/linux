@@ -38,7 +38,6 @@
 #include <linux/device.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/aio.h>
 #include <linux/kdev_t.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
@@ -48,6 +47,7 @@
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/module.h>
+#include <linux/uio.h>
 
 #include "fuse_i.h"
 
@@ -415,7 +415,7 @@ err_unlock:
 err_region:
 	unregister_chrdev_region(devt, 1);
 err:
-	fuse_conn_kill(fc);
+	fuse_abort_conn(fc);
 	goto out;
 }
 

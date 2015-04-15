@@ -22,11 +22,10 @@
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_bit.h"
-#include "xfs_inum.h"
 #include "xfs_sb.h"
-#include "xfs_ag.h"
 #include "xfs_mount.h"
 #include "xfs_da_format.h"
+#include "xfs_da_btree.h"
 #include "xfs_inode.h"
 #include "xfs_dir2.h"
 #include "xfs_ialloc.h"
@@ -41,7 +40,6 @@
 #include "xfs_fsops.h"
 #include "xfs_trace.h"
 #include "xfs_icache.h"
-#include "xfs_dinode.h"
 #include "xfs_sysfs.h"
 
 
@@ -60,8 +58,6 @@ STATIC void	xfs_icsb_disable_counter(xfs_mount_t *, xfs_sb_field_t);
 static DEFINE_MUTEX(xfs_uuid_table_mutex);
 static int xfs_uuid_table_size;
 static uuid_t *xfs_uuid_table;
-
-extern struct kset *xfs_kset;
 
 /*
  * See if the UUID is unique among mounted XFS filesystems.
@@ -302,21 +298,15 @@ xfs_readsb(
 	 * access to the superblock.
 	 */
 reread:
-	bp = xfs_buf_read_uncached(mp->m_ddev_targp, XFS_SB_DADDR,
-				   BTOBB(sector_size), 0, buf_ops);
-	if (!bp) {
-		if (loud)
-			xfs_warn(mp, "SB buffer read failed");
-		return -EIO;
-	}
-	if (bp->b_error) {
-		error = bp->b_error;
+	error = xfs_buf_read_uncached(mp->m_ddev_targp, XFS_SB_DADDR,
+				   BTOBB(sector_size), 0, &bp, buf_ops);
+	if (error) {
 		if (loud)
 			xfs_warn(mp, "SB validate failed with error %d.", error);
 		/* bad CRC means corrupted metadata */
 		if (error == -EFSBADCRC)
 			error = -EFSCORRUPTED;
-		goto release_buf;
+		return error;
 	}
 
 	/*
@@ -418,11 +408,11 @@ xfs_update_alignment(xfs_mount_t *mp)
 		if (xfs_sb_version_hasdalign(sbp)) {
 			if (sbp->sb_unit != mp->m_dalign) {
 				sbp->sb_unit = mp->m_dalign;
-				mp->m_update_flags |= XFS_SB_UNIT;
+				mp->m_update_sb = true;
 			}
 			if (sbp->sb_width != mp->m_swidth) {
 				sbp->sb_width = mp->m_swidth;
-				mp->m_update_flags |= XFS_SB_WIDTH;
+				mp->m_update_sb = true;
 			}
 		} else {
 			xfs_warn(mp,
@@ -546,40 +536,43 @@ xfs_set_inoalignment(xfs_mount_t *mp)
  * Check that the data (and log if separate) is an ok size.
  */
 STATIC int
-xfs_check_sizes(xfs_mount_t *mp)
+xfs_check_sizes(
+	struct xfs_mount *mp)
 {
-	xfs_buf_t	*bp;
+	struct xfs_buf	*bp;
 	xfs_daddr_t	d;
+	int		error;
 
 	d = (xfs_daddr_t)XFS_FSB_TO_BB(mp, mp->m_sb.sb_dblocks);
 	if (XFS_BB_TO_FSB(mp, d) != mp->m_sb.sb_dblocks) {
 		xfs_warn(mp, "filesystem size mismatch detected");
 		return -EFBIG;
 	}
-	bp = xfs_buf_read_uncached(mp->m_ddev_targp,
+	error = xfs_buf_read_uncached(mp->m_ddev_targp,
 					d - XFS_FSS_TO_BB(mp, 1),
-					XFS_FSS_TO_BB(mp, 1), 0, NULL);
-	if (!bp) {
+					XFS_FSS_TO_BB(mp, 1), 0, &bp, NULL);
+	if (error) {
 		xfs_warn(mp, "last sector read failed");
-		return -EIO;
+		return error;
 	}
 	xfs_buf_relse(bp);
 
-	if (mp->m_logdev_targp != mp->m_ddev_targp) {
-		d = (xfs_daddr_t)XFS_FSB_TO_BB(mp, mp->m_sb.sb_logblocks);
-		if (XFS_BB_TO_FSB(mp, d) != mp->m_sb.sb_logblocks) {
-			xfs_warn(mp, "log size mismatch detected");
-			return -EFBIG;
-		}
-		bp = xfs_buf_read_uncached(mp->m_logdev_targp,
-					d - XFS_FSB_TO_BB(mp, 1),
-					XFS_FSB_TO_BB(mp, 1), 0, NULL);
-		if (!bp) {
-			xfs_warn(mp, "log device read failed");
-			return -EIO;
-		}
-		xfs_buf_relse(bp);
+	if (mp->m_logdev_targp == mp->m_ddev_targp)
+		return 0;
+
+	d = (xfs_daddr_t)XFS_FSB_TO_BB(mp, mp->m_sb.sb_logblocks);
+	if (XFS_BB_TO_FSB(mp, d) != mp->m_sb.sb_logblocks) {
+		xfs_warn(mp, "log size mismatch detected");
+		return -EFBIG;
 	}
+	error = xfs_buf_read_uncached(mp->m_logdev_targp,
+					d - XFS_FSB_TO_BB(mp, 1),
+					XFS_FSB_TO_BB(mp, 1), 0, &bp, NULL);
+	if (error) {
+		xfs_warn(mp, "log device read failed");
+		return error;
+	}
+	xfs_buf_relse(bp);
 	return 0;
 }
 
@@ -590,38 +583,19 @@ int
 xfs_mount_reset_sbqflags(
 	struct xfs_mount	*mp)
 {
-	int			error;
-	struct xfs_trans	*tp;
-
 	mp->m_qflags = 0;
 
-	/*
-	 * It is OK to look at sb_qflags here in mount path,
-	 * without m_sb_lock.
-	 */
+	/* It is OK to look at sb_qflags in the mount path without m_sb_lock. */
 	if (mp->m_sb.sb_qflags == 0)
 		return 0;
 	spin_lock(&mp->m_sb_lock);
 	mp->m_sb.sb_qflags = 0;
 	spin_unlock(&mp->m_sb_lock);
 
-	/*
-	 * If the fs is readonly, let the incore superblock run
-	 * with quotas off but don't flush the update out to disk
-	 */
-	if (mp->m_flags & XFS_MOUNT_RDONLY)
+	if (!xfs_fs_writable(mp, SB_FREEZE_WRITE))
 		return 0;
 
-	tp = xfs_trans_alloc(mp, XFS_TRANS_QM_SBCHANGE);
-	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_qm_sbchange, 0, 0);
-	if (error) {
-		xfs_trans_cancel(tp, 0);
-		xfs_alert(mp, "%s: Superblock update failed!", __func__);
-		return error;
-	}
-
-	xfs_mod_sb(tp, XFS_SB_QFLAGS);
-	return xfs_trans_commit(tp, 0);
+	return xfs_sync_sb(mp, false);
 }
 
 __uint64_t
@@ -666,26 +640,25 @@ xfs_mountfs(
 	xfs_sb_mount_common(mp, sbp);
 
 	/*
-	 * Check for a mismatched features2 values.  Older kernels
-	 * read & wrote into the wrong sb offset for sb_features2
-	 * on some platforms due to xfs_sb_t not being 64bit size aligned
-	 * when sb_features2 was added, which made older superblock
-	 * reading/writing routines swap it as a 64-bit value.
+	 * Check for a mismatched features2 values.  Older kernels read & wrote
+	 * into the wrong sb offset for sb_features2 on some platforms due to
+	 * xfs_sb_t not being 64bit size aligned when sb_features2 was added,
+	 * which made older superblock reading/writing routines swap it as a
+	 * 64-bit value.
 	 *
 	 * For backwards compatibility, we make both slots equal.
 	 *
-	 * If we detect a mismatched field, we OR the set bits into the
-	 * existing features2 field in case it has already been modified; we
-	 * don't want to lose any features.  We then update the bad location
-	 * with the ORed value so that older kernels will see any features2
-	 * flags, and mark the two fields as needing updates once the
-	 * transaction subsystem is online.
+	 * If we detect a mismatched field, we OR the set bits into the existing
+	 * features2 field in case it has already been modified; we don't want
+	 * to lose any features.  We then update the bad location with the ORed
+	 * value so that older kernels will see any features2 flags. The
+	 * superblock writeback code ensures the new sb_features2 is copied to
+	 * sb_bad_features2 before it is logged or written to disk.
 	 */
 	if (xfs_sb_has_mismatched_features2(sbp)) {
 		xfs_warn(mp, "correcting sb_features alignment problem");
 		sbp->sb_features2 |= sbp->sb_bad_features2;
-		sbp->sb_bad_features2 = sbp->sb_features2;
-		mp->m_update_flags |= XFS_SB_FEATURES2 | XFS_SB_BAD_FEATURES2;
+		mp->m_update_sb = true;
 
 		/*
 		 * Re-check for ATTR2 in case it was found in bad_features2
@@ -699,17 +672,17 @@ xfs_mountfs(
 	if (xfs_sb_version_hasattr2(&mp->m_sb) &&
 	   (mp->m_flags & XFS_MOUNT_NOATTR2)) {
 		xfs_sb_version_removeattr2(&mp->m_sb);
-		mp->m_update_flags |= XFS_SB_FEATURES2;
+		mp->m_update_sb = true;
 
 		/* update sb_versionnum for the clearing of the morebits */
 		if (!sbp->sb_features2)
-			mp->m_update_flags |= XFS_SB_VERSIONNUM;
+			mp->m_update_sb = true;
 	}
 
 	/* always use v2 inodes by default now */
 	if (!(mp->m_sb.sb_versionnum & XFS_SB_VERSION_NLINKBIT)) {
 		mp->m_sb.sb_versionnum |= XFS_SB_VERSION_NLINKBIT;
-		mp->m_update_flags |= XFS_SB_VERSIONNUM;
+		mp->m_update_sb = true;
 	}
 
 	/*
@@ -729,7 +702,6 @@ xfs_mountfs(
 
 	xfs_set_maxicount(mp);
 
-	mp->m_kobj.kobject.kset = xfs_kset;
 	error = xfs_sysfs_init(&mp->m_kobj, &xfs_mp_ktype, NULL, mp->m_fsname);
 	if (error)
 		goto out;
@@ -903,8 +875,8 @@ xfs_mountfs(
 	 * the next remount into writeable mode.  Otherwise we would never
 	 * perform the update e.g. for the root filesystem.
 	 */
-	if (mp->m_update_flags && !(mp->m_flags & XFS_MOUNT_RDONLY)) {
-		error = xfs_mount_log_sb(mp, mp->m_update_flags);
+	if (mp->m_update_sb && !(mp->m_flags & XFS_MOUNT_RDONLY)) {
+		error = xfs_sync_sb(mp, false);
 		if (error) {
 			xfs_warn(mp, "failed to write sb changes");
 			goto out_rtunmount;
@@ -1080,11 +1052,23 @@ xfs_unmountfs(
 	xfs_sysfs_del(&mp->m_kobj);
 }
 
-int
-xfs_fs_writable(xfs_mount_t *mp)
+/*
+ * Determine whether modifications can proceed. The caller specifies the minimum
+ * freeze level for which modifications should not be allowed. This allows
+ * certain operations to proceed while the freeze sequence is in progress, if
+ * necessary.
+ */
+bool
+xfs_fs_writable(
+	struct xfs_mount	*mp,
+	int			level)
 {
-	return !(mp->m_super->s_writers.frozen || XFS_FORCED_SHUTDOWN(mp) ||
-		(mp->m_flags & XFS_MOUNT_RDONLY));
+	ASSERT(level > SB_UNFROZEN);
+	if ((mp->m_super->s_writers.frozen >= level) ||
+	    XFS_FORCED_SHUTDOWN(mp) || (mp->m_flags & XFS_MOUNT_RDONLY))
+		return false;
+
+	return true;
 }
 
 /*
@@ -1092,17 +1076,15 @@ xfs_fs_writable(xfs_mount_t *mp)
  *
  * Sync the superblock counters to disk.
  *
- * Note this code can be called during the process of freezing, so
- * we may need to use the transaction allocator which does not
- * block when the transaction subsystem is in its frozen state.
+ * Note this code can be called during the process of freezing, so we use the
+ * transaction allocator that does not block when the transaction subsystem is
+ * in its frozen state.
  */
 int
 xfs_log_sbcount(xfs_mount_t *mp)
 {
-	xfs_trans_t	*tp;
-	int		error;
-
-	if (!xfs_fs_writable(mp))
+	/* allow this to proceed during the freeze sequence... */
+	if (!xfs_fs_writable(mp, SB_FREEZE_COMPLETE))
 		return 0;
 
 	xfs_icsb_sync_counters(mp, 0);
@@ -1114,17 +1096,7 @@ xfs_log_sbcount(xfs_mount_t *mp)
 	if (!xfs_sb_version_haslazysbcount(&mp->m_sb))
 		return 0;
 
-	tp = _xfs_trans_alloc(mp, XFS_TRANS_SB_COUNT, KM_SLEEP);
-	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_sb, 0, 0);
-	if (error) {
-		xfs_trans_cancel(tp, 0);
-		return error;
-	}
-
-	xfs_mod_sb(tp, XFS_SB_IFREE | XFS_SB_ICOUNT | XFS_SB_FDBLOCKS);
-	xfs_trans_set_sync(tp);
-	error = xfs_trans_commit(tp, 0);
-	return error;
+	return xfs_sync_sb(mp, true);
 }
 
 /*
@@ -1415,34 +1387,6 @@ xfs_freesb(
 	xfs_buf_lock(bp);
 	mp->m_sb_bp = NULL;
 	xfs_buf_relse(bp);
-}
-
-/*
- * Used to log changes to the superblock unit and width fields which could
- * be altered by the mount options, as well as any potential sb_features2
- * fixup. Only the first superblock is updated.
- */
-int
-xfs_mount_log_sb(
-	xfs_mount_t	*mp,
-	__int64_t	fields)
-{
-	xfs_trans_t	*tp;
-	int		error;
-
-	ASSERT(fields & (XFS_SB_UNIT | XFS_SB_WIDTH | XFS_SB_UUID |
-			 XFS_SB_FEATURES2 | XFS_SB_BAD_FEATURES2 |
-			 XFS_SB_VERSIONNUM));
-
-	tp = xfs_trans_alloc(mp, XFS_TRANS_SB_UNIT);
-	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_sb, 0, 0);
-	if (error) {
-		xfs_trans_cancel(tp, 0);
-		return error;
-	}
-	xfs_mod_sb(tp, fields);
-	error = xfs_trans_commit(tp, 0);
-	return error;
 }
 
 /*

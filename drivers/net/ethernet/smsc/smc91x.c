@@ -81,6 +81,7 @@ static const char version[] =
 #include <linux/workqueue.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_gpio.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -89,6 +90,11 @@ static const char version[] =
 #include <asm/io.h>
 
 #include "smc91x.h"
+
+#if defined(CONFIG_ASSABET_NEPONSET)
+#include <mach/assabet.h>
+#include <mach/neponset.h>
+#endif
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -1967,9 +1973,6 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 	}
 	dev->irq = irq_canonicalize(dev->irq);
 
-	/* Fill in the fields of the device structure with ethernet values. */
-	ether_setup(dev);
-
 	dev->watchdog_timeo = msecs_to_jiffies(watchdog);
 	dev->netdev_ops = &smc_netdev_ops;
 	dev->ethtool_ops = &smc_ethtool_ops;
@@ -2191,6 +2194,41 @@ static const struct of_device_id smc91x_match[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, smc91x_match);
+
+/**
+ * of_try_set_control_gpio - configure a gpio if it exists
+ */
+static int try_toggle_control_gpio(struct device *dev,
+				   struct gpio_desc **desc,
+				   const char *name, int index,
+				   int value, unsigned int nsdelay)
+{
+	struct gpio_desc *gpio = *desc;
+	int res;
+
+	gpio = devm_gpiod_get_index(dev, name, index);
+	if (IS_ERR(gpio)) {
+		if (PTR_ERR(gpio) == -ENOENT) {
+			*desc = NULL;
+			return 0;
+		}
+
+		return PTR_ERR(gpio);
+	}
+	res = gpiod_direction_output(gpio, !value);
+	if (res) {
+		dev_err(dev, "unable to toggle gpio %s: %i\n", name, res);
+		devm_gpiod_put(dev, gpio);
+		gpio = NULL;
+		return res;
+	}
+	if (nsdelay)
+		usleep_range(nsdelay, 2 * nsdelay);
+	gpiod_set_value_cansleep(gpio, value);
+	*desc = gpio;
+
+	return 0;
+}
 #endif
 
 /*
@@ -2239,6 +2277,28 @@ static int smc_drv_probe(struct platform_device *pdev)
 	if (match) {
 		struct device_node *np = pdev->dev.of_node;
 		u32 val;
+
+		/* Optional pwrdwn GPIO configured? */
+		ret = try_toggle_control_gpio(&pdev->dev, &lp->power_gpio,
+					      "power", 0, 0, 100);
+		if (ret)
+			return ret;
+
+		/*
+		 * Optional reset GPIO configured? Minimum 100 ns reset needed
+		 * according to LAN91C96 datasheet page 14.
+		 */
+		ret = try_toggle_control_gpio(&pdev->dev, &lp->reset_gpio,
+					      "reset", 0, 0, 100);
+		if (ret)
+			return ret;
+
+		/*
+		 * Need to wait for optional EEPROM to load, max 750 us according
+		 * to LAN91C96 datasheet page 55.
+		 */
+		if (lp->reset_gpio)
+			usleep_range(750, 1000);
 
 		/* Combination of IO widths supported, default to 16-bit */
 		if (!of_property_read_u32(np, "reg-io-width", &val)) {
@@ -2296,8 +2356,9 @@ static int smc_drv_probe(struct platform_device *pdev)
 	ret = smc_request_attrib(pdev, ndev);
 	if (ret)
 		goto out_release_io;
-#if defined(CONFIG_SA1100_ASSABET)
-	neponset_ncr_set(NCR_ENET_OSC_EN);
+#if defined(CONFIG_ASSABET_NEPONSET)
+	if (machine_is_assabet() && machine_has_neponset())
+		neponset_ncr_set(NCR_ENET_OSC_EN);
 #endif
 	platform_set_drvdata(pdev, ndev);
 	ret = smc_enable_device(pdev);
@@ -2413,7 +2474,6 @@ static struct platform_driver smc_driver = {
 	.remove		= smc_drv_remove,
 	.driver		= {
 		.name	= CARDNAME,
-		.owner	= THIS_MODULE,
 		.pm	= &smc_drv_pm_ops,
 		.of_match_table = of_match_ptr(smc91x_match),
 	},

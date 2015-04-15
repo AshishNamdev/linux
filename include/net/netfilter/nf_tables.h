@@ -119,6 +119,22 @@ int nft_validate_data_load(const struct nft_ctx *ctx, enum nft_registers reg,
 			   const struct nft_data *data,
 			   enum nft_data_types type);
 
+
+/**
+ *	struct nft_userdata - user defined data associated with an object
+ *
+ *	@len: length of the data
+ *	@data: content
+ *
+ *	The presence of user data is indicated in an object specific fashion,
+ *	so a length of zero can't occur and the value "len" indicates data
+ *	of length len + 1.
+ */
+struct nft_userdata {
+	u8			len;
+	unsigned char		data[0];
+};
+
 /**
  *	struct nft_set_elem - generic representation of set elements
  *
@@ -241,6 +257,7 @@ void nft_unregister_set(struct nft_set_ops *ops);
  * 	@dtype: data type (verdict or numeric type defined by userspace)
  * 	@size: maximum set size
  * 	@nelems: number of elements
+ *	@policy: set parameterization (see enum nft_set_policies)
  * 	@ops: set ops
  * 	@flags: set flags
  * 	@klen: key length
@@ -255,6 +272,7 @@ struct nft_set {
 	u32				dtype;
 	u32				size;
 	u32				nelems;
+	u16				policy;
 	/* runtime data below here */
 	const struct nft_set_ops	*ops ____cacheline_aligned;
 	u16				flags;
@@ -378,7 +396,7 @@ static inline void *nft_expr_priv(const struct nft_expr *expr)
  *	@handle: rule handle
  *	@genmask: generation mask
  *	@dlen: length of expression data
- *	@ulen: length of user data (used for comments)
+ *	@udata: user data is appended to the rule
  *	@data: expression data
  */
 struct nft_rule {
@@ -386,7 +404,7 @@ struct nft_rule {
 	u64				handle:42,
 					genmask:2,
 					dlen:12,
-					ulen:8;
+					udata:1;
 	unsigned char			data[]
 		__attribute__((aligned(__alignof__(struct nft_expr))));
 };
@@ -394,14 +412,12 @@ struct nft_rule {
 /**
  *	struct nft_trans - nf_tables object update in transaction
  *
- *	@rcu_head: rcu head to defer release of transaction data
  *	@list: used internally
  *	@msg_type: message type
  *	@ctx: transaction context
  *	@data: internal information related to the transaction
  */
 struct nft_trans {
-	struct rcu_head			rcu_head;
 	struct list_head		list;
 	int				msg_type;
 	struct nft_ctx			ctx;
@@ -476,7 +492,7 @@ static inline struct nft_expr *nft_expr_last(const struct nft_rule *rule)
 	return (struct nft_expr *)&rule->data[rule->dlen];
 }
 
-static inline void *nft_userdata(const struct nft_rule *rule)
+static inline struct nft_userdata *nft_userdata(const struct nft_rule *rule)
 {
 	return (void *)&rule->data[rule->dlen];
 }
@@ -527,6 +543,11 @@ enum nft_chain_type {
 	NFT_CHAIN_T_NAT,
 	NFT_CHAIN_T_MAX
 };
+
+int nft_chain_validate_dependency(const struct nft_chain *chain,
+				  enum nft_chain_type type);
+int nft_chain_validate_hooks(const struct nft_chain *chain,
+                             unsigned int hook_flags);
 
 struct nft_stats {
 	u64			bytes;

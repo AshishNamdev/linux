@@ -22,4 +22,10 @@
 			reg = <0>;
 		};
 	};
+
+	pmu {
+		compatible = "arm,cortex-a15-pmu";
+		interrupt-parent = <&wakeupgen>;
+		interrupts = <GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>;
+	};
 };
