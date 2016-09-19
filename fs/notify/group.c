@@ -31,7 +31,7 @@
 /*
  * Final freeing of a group
  */
-void fsnotify_final_destroy_group(struct fsnotify_group *group)
+static void fsnotify_final_destroy_group(struct fsnotify_group *group)
 {
 	if (group->ops->free_group_priv)
 		group->ops->free_group_priv(group);
@@ -47,12 +47,21 @@ void fsnotify_final_destroy_group(struct fsnotify_group *group)
  */
 void fsnotify_destroy_group(struct fsnotify_group *group)
 {
-	/* clear all inode marks for this group */
-	fsnotify_clear_marks_by_group(group);
+	/* clear all inode marks for this group, attach them to destroy_list */
+	fsnotify_detach_group_marks(group);
 
-	synchronize_srcu(&fsnotify_mark_srcu);
+	/*
+	 * Wait for fsnotify_mark_srcu period to end and free all marks in
+	 * destroy_list
+	 */
+	fsnotify_mark_destroy_list();
 
-	/* clear the notification queue of all events */
+	/*
+	 * Since we have waited for fsnotify_mark_srcu in
+	 * fsnotify_mark_destroy_list() there can be no outstanding event
+	 * notification against this group. So clearing the notification queue
+	 * of all events is reliable now.
+	 */
 	fsnotify_flush_notify(group);
 
 	/*

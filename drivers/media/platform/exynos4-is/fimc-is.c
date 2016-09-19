@@ -204,9 +204,6 @@ static int fimc_is_register_subdevs(struct fimc_is *is)
 	if (ret < 0)
 		return ret;
 
-	/* Initialize memory allocator context for the ISP DMA. */
-	is->isp.alloc_ctx = is->alloc_ctx;
-
 	for_each_compatible_node(i2c_bus, NULL, FIMC_IS_I2C_COMPATIBLE) {
 		for_each_available_child_of_node(i2c_bus, child) {
 			ret = fimc_is_parse_sensor_config(is, index, child);
@@ -388,7 +385,7 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 	mutex_lock(&is->lock);
 
 	if (fw->size < FIMC_IS_FW_SIZE_MIN || fw->size > FIMC_IS_FW_SIZE_MAX) {
-		dev_err(dev, "wrong firmware size: %d\n", fw->size);
+		dev_err(dev, "wrong firmware size: %zu\n", fw->size);
 		goto done;
 	}
 
@@ -416,7 +413,7 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 
 	dev_info(dev, "loaded firmware: %s, rev. %s\n",
 		 is->fw.info, is->fw.version);
-	dev_dbg(dev, "FW size: %d, paddr: %#x\n", fw->size, is->memory.paddr);
+	dev_dbg(dev, "FW size: %zu, paddr: %pad\n", fw->size, &is->memory.paddr);
 
 	is->is_shared_region->chip_id = 0xe4412;
 	is->is_shared_region->chip_rev_no = 1;
@@ -428,8 +425,7 @@ static void fimc_is_load_firmware(const struct firmware *fw, void *context)
 	 * needed around for copying to the IS working memory every
 	 * time before the Cortex-A5 is restarted.
 	 */
-	if (is->fw.f_w)
-		release_firmware(is->fw.f_w);
+	release_firmware(is->fw.f_w);
 	is->fw.f_w = fw;
 done:
 	mutex_unlock(&is->lock);
@@ -632,6 +628,12 @@ static int fimc_is_hw_open_sensor(struct fimc_is *is,
 
 	fimc_is_mem_barrier();
 
+	/*
+	 * Some user space use cases hang up here without this
+	 * empirically chosen delay.
+	 */
+	udelay(100);
+
 	mcuctl_write(HIC_OPEN_SENSOR, is, MCUCTL_REG_ISSR(0));
 	mcuctl_write(is->sensor_index, is, MCUCTL_REG_ISSR(1));
 	mcuctl_write(sensor->drvdata->id, is, MCUCTL_REG_ISSR(2));
@@ -693,9 +695,9 @@ int fimc_is_hw_initialize(struct fimc_is *is)
 		return -EIO;
 	}
 
-	pr_debug("shared region: %#x, parameter region: %#x\n",
-		 is->memory.paddr + FIMC_IS_SHARED_REGION_OFFSET,
-		 is->is_dma_p_region);
+	pr_debug("shared region: %pad, parameter region: %pad\n",
+		 &is->memory.paddr + FIMC_IS_SHARED_REGION_OFFSET,
+		 &is->is_dma_p_region);
 
 	is->setfile.sub_index = 0;
 
@@ -814,9 +816,9 @@ static int fimc_is_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	is->irq = irq_of_parse_and_map(dev->of_node, 0);
-	if (is->irq < 0) {
+	if (!is->irq) {
 		dev_err(dev, "no irq found\n");
-		return is->irq;
+		return -EINVAL;
 	}
 
 	ret = fimc_is_get_clocks(is);
@@ -842,18 +844,14 @@ static int fimc_is_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_pm;
 
-	is->alloc_ctx = vb2_dma_contig_init_ctx(dev);
-	if (IS_ERR(is->alloc_ctx)) {
-		ret = PTR_ERR(is->alloc_ctx);
-		goto err_pm;
-	}
+	vb2_dma_contig_set_max_seg_size(dev, DMA_BIT_MASK(32));
 	/*
 	 * Register FIMC-IS V4L2 subdevs to this driver. The video nodes
 	 * will be created within the subdev's registered() callback.
 	 */
 	ret = fimc_is_register_subdevs(is);
 	if (ret < 0)
-		goto err_vb;
+		goto err_pm;
 
 	ret = fimc_is_debugfs_create(is);
 	if (ret < 0)
@@ -872,8 +870,6 @@ err_dfs:
 	fimc_is_debugfs_remove(is);
 err_sd:
 	fimc_is_unregister_subdevs(is);
-err_vb:
-	vb2_dma_contig_cleanup_ctx(is->alloc_ctx);
 err_pm:
 	if (!pm_runtime_enabled(dev))
 		fimc_is_runtime_suspend(dev);
@@ -934,11 +930,10 @@ static int fimc_is_remove(struct platform_device *pdev)
 		fimc_is_runtime_suspend(dev);
 	free_irq(is->irq, is);
 	fimc_is_unregister_subdevs(is);
-	vb2_dma_contig_cleanup_ctx(is->alloc_ctx);
+	vb2_dma_contig_clear_max_seg_size(dev);
 	fimc_is_put_clocks(is);
 	fimc_is_debugfs_remove(is);
-	if (is->fw.f_w)
-		release_firmware(is->fw.f_w);
+	release_firmware(is->fw.f_w);
 	fimc_is_free_cpu_memory(is);
 
 	return 0;
@@ -962,7 +957,6 @@ static struct platform_driver fimc_is_driver = {
 	.driver = {
 		.of_match_table	= fimc_is_of_match,
 		.name		= FIMC_IS_DRV_NAME,
-		.owner		= THIS_MODULE,
 		.pm		= &fimc_is_pm_ops,
 	}
 };

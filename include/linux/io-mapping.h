@@ -21,7 +21,7 @@
 #include <linux/types.h>
 #include <linux/slab.h>
 #include <linux/bug.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/page.h>
 
 /*
@@ -100,14 +100,16 @@ io_mapping_unmap_atomic(void __iomem *vaddr)
 }
 
 static inline void __iomem *
-io_mapping_map_wc(struct io_mapping *mapping, unsigned long offset)
+io_mapping_map_wc(struct io_mapping *mapping,
+		  unsigned long offset,
+		  unsigned long size)
 {
 	resource_size_t phys_addr;
 
 	BUG_ON(offset >= mapping->size);
 	phys_addr = mapping->base + offset;
 
-	return ioremap_wc(phys_addr, PAGE_SIZE);
+	return ioremap_wc(phys_addr, size);
 }
 
 static inline void
@@ -141,6 +143,7 @@ static inline void __iomem *
 io_mapping_map_atomic_wc(struct io_mapping *mapping,
 			 unsigned long offset)
 {
+	preempt_disable();
 	pagefault_disable();
 	return ((char __force __iomem *) mapping) + offset;
 }
@@ -149,11 +152,14 @@ static inline void
 io_mapping_unmap_atomic(void __iomem *vaddr)
 {
 	pagefault_enable();
+	preempt_enable();
 }
 
 /* Non-atomic map/unmap */
 static inline void __iomem *
-io_mapping_map_wc(struct io_mapping *mapping, unsigned long offset)
+io_mapping_map_wc(struct io_mapping *mapping,
+		  unsigned long offset,
+		  unsigned long size)
 {
 	return ((char __force __iomem *) mapping) + offset;
 }

@@ -19,13 +19,13 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/efi.h>
-#include <linux/verify_pefile.h>
-#include <keys/system_keyring.h>
+#include <linux/verification.h>
 
 #include <asm/bootparam.h>
 #include <asm/setup.h>
 #include <asm/crash.h>
 #include <asm/efi.h>
+#include <asm/kexec-bzimage64.h>
 
 #define MAX_ELFCOREHDR_STR_LEN	30	/* elfcorehdr=0x<64bit-value> */
 
@@ -71,15 +71,16 @@ static int setup_cmdline(struct kimage *image, struct boot_params *params,
 			 unsigned long cmdline_len)
 {
 	char *cmdline_ptr = ((char *)params) + cmdline_offset;
-	unsigned long cmdline_ptr_phys, len;
+	unsigned long cmdline_ptr_phys, len = 0;
 	uint32_t cmdline_low_32, cmdline_ext_32;
 
-	memcpy(cmdline_ptr, cmdline, cmdline_len);
 	if (image->type == KEXEC_TYPE_CRASH) {
-		len = sprintf(cmdline_ptr + cmdline_len - 1,
-			" elfcorehdr=0x%lx", image->arch.elf_load_addr);
-		cmdline_len += len;
+		len = sprintf(cmdline_ptr,
+			"elfcorehdr=0x%lx ", image->arch.elf_load_addr);
 	}
+	memcpy(cmdline_ptr + len, cmdline, cmdline_len);
+	cmdline_len += len;
+
 	cmdline_ptr[cmdline_len - 1] = '\0';
 
 	pr_debug("Final command line is: %s\n", cmdline_ptr);
@@ -221,9 +222,6 @@ setup_boot_parameters(struct kimage *image, struct boot_params *params,
 	memset(&params->hd0_info, 0, sizeof(params->hd0_info));
 	memset(&params->hd1_info, 0, sizeof(params->hd1_info));
 
-	/* Default sysdesc table */
-	params->sys_desc_table.length = 0;
-
 	if (image->type == KEXEC_TYPE_CRASH) {
 		ret = crash_setup_memmap_entries(image, params);
 		if (ret)
@@ -267,12 +265,12 @@ setup_boot_parameters(struct kimage *image, struct boot_params *params,
 	return ret;
 }
 
-int bzImage64_probe(const char *buf, unsigned long len)
+static int bzImage64_probe(const char *buf, unsigned long len)
 {
 	int ret = -ENOEXEC;
 	struct setup_header *header;
 
-	/* kernel should be atleast two sectors long */
+	/* kernel should be at least two sectors long */
 	if (len < 2 * 512) {
 		pr_err("File is too short to be a bzImage\n");
 		return ret;
@@ -325,10 +323,10 @@ int bzImage64_probe(const char *buf, unsigned long len)
 	return ret;
 }
 
-void *bzImage64_load(struct kimage *image, char *kernel,
-		     unsigned long kernel_len, char *initrd,
-		     unsigned long initrd_len, char *cmdline,
-		     unsigned long cmdline_len)
+static void *bzImage64_load(struct kimage *image, char *kernel,
+			    unsigned long kernel_len, char *initrd,
+			    unsigned long initrd_len, char *cmdline,
+			    unsigned long cmdline_len)
 {
 
 	struct setup_header *header;
@@ -514,7 +512,7 @@ out_free_params:
 }
 
 /* This cleanup function is called after various segments have been loaded */
-int bzImage64_cleanup(void *loader_data)
+static int bzImage64_cleanup(void *loader_data)
 {
 	struct bzimage64_data *ldata = loader_data;
 
@@ -528,18 +526,11 @@ int bzImage64_cleanup(void *loader_data)
 }
 
 #ifdef CONFIG_KEXEC_BZIMAGE_VERIFY_SIG
-int bzImage64_verify_sig(const char *kernel, unsigned long kernel_len)
+static int bzImage64_verify_sig(const char *kernel, unsigned long kernel_len)
 {
-	bool trusted;
-	int ret;
-
-	ret = verify_pefile_signature(kernel, kernel_len,
-				      system_trusted_keyring, &trusted);
-	if (ret < 0)
-		return ret;
-	if (!trusted)
-		return -EKEYREJECTED;
-	return 0;
+	return verify_pefile_signature(kernel, kernel_len,
+				       NULL,
+				       VERIFYING_KEXEC_PE_SIGNATURE);
 }
 #endif
 

@@ -14,6 +14,7 @@
 #include <drm/drmP.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_plane_helper.h>
 #include "udl_drv.h"
 
 /*
@@ -278,14 +279,6 @@ static void udl_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 }
 
-static bool udl_crtc_mode_fixup(struct drm_crtc *crtc,
-				  const struct drm_display_mode *mode,
-				  struct drm_display_mode *adjusted_mode)
-
-{
-	return true;
-}
-
 #if 0
 static int
 udl_pipe_set_base_atomic(struct drm_crtc *crtc, struct drm_framebuffer *fb,
@@ -339,11 +332,11 @@ static int udl_crtc_mode_set(struct drm_crtc *crtc,
 
 	wrptr = udl_dummy_render(wrptr);
 
-	ufb->active_16 = true;
 	if (old_fb) {
 		struct udl_framebuffer *uold_fb = to_udl_fb(old_fb);
 		uold_fb->active_16 = false;
 	}
+	ufb->active_16 = true;
 	udl->mode_buf_len = wrptr - buf;
 
 	/* damage all of it */
@@ -372,11 +365,18 @@ static int udl_crtc_page_flip(struct drm_crtc *crtc,
 	struct drm_device *dev = crtc->dev;
 	unsigned long flags;
 
+	struct drm_framebuffer *old_fb = crtc->primary->fb;
+	if (old_fb) {
+		struct udl_framebuffer *uold_fb = to_udl_fb(old_fb);
+		uold_fb->active_16 = false;
+	}
+	ufb->active_16 = true;
+
 	udl_handle_damage(ufb, 0, 0, fb->width, fb->height);
 
 	spin_lock_irqsave(&dev->event_lock, flags);
 	if (event)
-		drm_send_vblank_event(dev, 0, event);
+		drm_crtc_send_vblank_event(crtc, event);
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 	crtc->primary->fb = fb;
 
@@ -392,9 +392,8 @@ static void udl_crtc_commit(struct drm_crtc *crtc)
 	udl_crtc_dpms(crtc, DRM_MODE_DPMS_ON);
 }
 
-static struct drm_crtc_helper_funcs udl_helper_funcs = {
+static const struct drm_crtc_helper_funcs udl_helper_funcs = {
 	.dpms = udl_crtc_dpms,
-	.mode_fixup = udl_crtc_mode_fixup,
 	.mode_set = udl_crtc_mode_set,
 	.prepare = udl_crtc_prepare,
 	.commit = udl_crtc_commit,

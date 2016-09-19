@@ -211,7 +211,7 @@ static struct mvebu_pinctrl_soc_info mv88f5281_info = {
  * There are multiple variants of the Orion SoCs, but in terms of pin
  * muxing, they are identical.
  */
-static struct of_device_id orion_pinctrl_of_match[] = {
+static const struct of_device_id orion_pinctrl_of_match[] = {
 	{ .compatible = "marvell,88f5181l-pinctrl", .data = &mv88f5181l_info },
 	{ .compatible = "marvell,88f5182-pinctrl", .data = &mv88f5182_info },
 	{ .compatible = "marvell,88f5281-pinctrl", .data = &mv88f5281_info },
@@ -239,19 +239,12 @@ static int orion_pinctrl_probe(struct platform_device *pdev)
 	return mvebu_pinctrl_probe(pdev);
 }
 
-static int orion_pinctrl_remove(struct platform_device *pdev)
-{
-	return mvebu_pinctrl_remove(pdev);
-}
-
 static struct platform_driver orion_pinctrl_driver = {
 	.driver = {
 		.name = "orion-pinctrl",
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(orion_pinctrl_of_match),
 	},
 	.probe = orion_pinctrl_probe,
-	.remove = orion_pinctrl_remove,
 };
 
 module_platform_driver(orion_pinctrl_driver);

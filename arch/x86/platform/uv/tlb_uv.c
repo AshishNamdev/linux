@@ -37,7 +37,7 @@ static int timeout_base_ns[] = {
 };
 
 static int timeout_us;
-static int nobau;
+static bool nobau = true;
 static int nobau_perm;
 static cycles_t congested_cycles;
 
@@ -106,13 +106,28 @@ static char *stat_description[] = {
 	"enable:   number times use of the BAU was re-enabled"
 };
 
-static int __init
-setup_nobau(char *arg)
+static int __init setup_bau(char *arg)
 {
-	nobau = 1;
+	int result;
+
+	if (!arg)
+		return -EINVAL;
+
+	result = strtobool(arg, &nobau);
+	if (result)
+		return result;
+
+	/* we need to flip the logic here, so that bau=y sets nobau to false */
+	nobau = !nobau;
+
+	if (!nobau)
+		pr_info("UV BAU Enabled\n");
+	else
+		pr_info("UV BAU Disabled\n");
+
 	return 0;
 }
-early_param("nobau", setup_nobau);
+early_param("bau", setup_bau);
 
 /* base pnode in this partition */
 static int uv_base_pnode __read_mostly;
@@ -131,10 +146,10 @@ set_bau_on(void)
 		pr_info("BAU not initialized; cannot be turned on\n");
 		return;
 	}
-	nobau = 0;
+	nobau = false;
 	for_each_present_cpu(cpu) {
 		bcp = &per_cpu(bau_control, cpu);
-		bcp->nobau = 0;
+		bcp->nobau = false;
 	}
 	pr_info("BAU turned on\n");
 	return;
@@ -146,10 +161,10 @@ set_bau_off(void)
 	int cpu;
 	struct bau_control *bcp;
 
-	nobau = 1;
+	nobau = true;
 	for_each_present_cpu(cpu) {
 		bcp = &per_cpu(bau_control, cpu);
-		bcp->nobau = 1;
+		bcp->nobau = true;
 	}
 	pr_info("BAU turned off\n");
 	return;
@@ -415,7 +430,7 @@ static void reset_with_ipi(struct pnmask *distribution, struct bau_control *bcp)
 	struct reset_args reset_args;
 
 	reset_args.sender = sender;
-	cpus_clear(*mask);
+	cpumask_clear(mask);
 	/* find a single cpu for each uvhub in this distribution mask */
 	maskbits = sizeof(struct pnmask) * BITSPERBYTE;
 	/* each bit is a pnode relative to the partition base pnode */
@@ -425,7 +440,7 @@ static void reset_with_ipi(struct pnmask *distribution, struct bau_control *bcp)
 			continue;
 		apnode = pnode + bcp->partition_base_pnode;
 		cpu = pnode_to_first_cpu(apnode, smaster);
-		cpu_set(cpu, *mask);
+		cpumask_set_cpu(cpu, mask);
 	}
 
 	/* IPI all cpus; preemption is already disabled */
@@ -1126,7 +1141,7 @@ const struct cpumask *uv_flush_tlb_others(const struct cpumask *cpumask,
 	/* don't actually do a shootdown of the local cpu */
 	cpumask_andnot(flush_mask, cpumask, cpumask_of(cpu));
 
-	if (cpu_isset(cpu, *cpumask))
+	if (cpumask_test_cpu(cpu, cpumask))
 		stat->s_ntargself++;
 
 	bau_desc = bcp->descriptor_base;
@@ -1367,23 +1382,25 @@ static int ptc_seq_show(struct seq_file *file, void *data)
 
 	cpu = *(loff_t *)data;
 	if (!cpu) {
-		seq_printf(file,
-		 "# cpu bauoff sent stime self locals remotes ncpus localhub ");
-		seq_printf(file,
-			"remotehub numuvhubs numuvhubs16 numuvhubs8 ");
-		seq_printf(file,
-			"numuvhubs4 numuvhubs2 numuvhubs1 dto snacks retries ");
-		seq_printf(file,
-			"rok resetp resett giveup sto bz throt disable ");
-		seq_printf(file,
-			"enable wars warshw warwaits enters ipidis plugged ");
-		seq_printf(file,
-			"ipiover glim cong swack recv rtime all one mult ");
-		seq_printf(file,
-			"none retry canc nocan reset rcan\n");
+		seq_puts(file,
+			 "# cpu bauoff sent stime self locals remotes ncpus localhub ");
+		seq_puts(file, "remotehub numuvhubs numuvhubs16 numuvhubs8 ");
+		seq_puts(file,
+			 "numuvhubs4 numuvhubs2 numuvhubs1 dto snacks retries ");
+		seq_puts(file,
+			 "rok resetp resett giveup sto bz throt disable ");
+		seq_puts(file,
+			 "enable wars warshw warwaits enters ipidis plugged ");
+		seq_puts(file,
+			 "ipiover glim cong swack recv rtime all one mult ");
+		seq_puts(file, "none retry canc nocan reset rcan\n");
 	}
 	if (cpu < num_possible_cpus() && cpu_online(cpu)) {
 		bcp = &per_cpu(bau_control, cpu);
+		if (bcp->nobau) {
+			seq_printf(file, "cpu %d bau disabled\n", cpu);
+			return 0;
+		}
 		stat = bcp->statp;
 		/* source side statistics */
 		seq_printf(file,
@@ -1884,7 +1901,7 @@ static void __init init_per_cpu_tunables(void)
 		bcp = &per_cpu(bau_control, cpu);
 		bcp->baudisabled		= 0;
 		if (nobau)
-			bcp->nobau		= 1;
+			bcp->nobau		= true;
 		bcp->statp			= &per_cpu(ptcstats, cpu);
 		/* time interval to catch a hardware stay-busy bug */
 		bcp->timeout_interval		= usec_2_cycles(2*timeout_us);
@@ -2023,7 +2040,8 @@ static int scan_sock(struct socket_desc *sdp, struct uvhub_desc *bdp,
 			return 1;
 		}
 		bcp->uvhub_master = *hmasterp;
-		bcp->uvhub_cpu = uv_cpu_hub_info(cpu)->blade_processor_id;
+		bcp->uvhub_cpu = uv_cpu_blade_processor_id(cpu);
+
 		if (bcp->uvhub_cpu >= MAX_CPUS_PER_UVHUB) {
 			printk(KERN_EMERG "%d cpus per uvhub invalid\n",
 				bcp->uvhub_cpu);

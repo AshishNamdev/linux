@@ -200,9 +200,6 @@ struct recv_priv {
 	u8 *precv_buf;
 
 	/* For display the phy informatiom */
-	u8 is_signal_dbg;	/*  for debug */
-	u8 signal_strength_dbg;	/*  for debug */
-	s8 rssi;
 	s8 rxpwdb;
 	u8 signal_strength;
 	u8 signal_qual;
@@ -282,8 +279,6 @@ int rtw_enqueue_recvframe23a(struct recv_frame *precvframe, struct rtw_queue *qu
 
 u32 rtw_free_uc_swdec_pending_queue23a(struct rtw_adapter *adapter);
 
-int rtw_enqueue_recvbuf23a_to_head(struct recv_buf *precvbuf, struct rtw_queue *queue);
-int rtw_enqueue_recvbuf23a(struct recv_buf *precvbuf, struct rtw_queue *queue);
 struct recv_buf *rtw_dequeue_recvbuf23a(struct rtw_queue *queue);
 
 void rtw_reordering_ctrl_timeout_handler23a(unsigned long pcontext);

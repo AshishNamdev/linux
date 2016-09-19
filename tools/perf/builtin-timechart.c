@@ -30,7 +30,7 @@
 
 #include "perf.h"
 #include "util/header.h"
-#include "util/parse-options.h"
+#include <subcmd/parse-options.h>
 #include "util/parse-events.h"
 #include "util/event.h"
 #include "util/session.h"
@@ -61,10 +61,11 @@ struct timechart {
 				tasks_only,
 				with_backtrace,
 				topology;
+	bool			force;
 	/* IO related settings */
-	u64			io_events;
 	bool			io_only,
 				skip_eagain;
+	u64			io_events;
 	u64			min_time,
 				merge_dist;
 };
@@ -488,7 +489,7 @@ static const char *cat_backtrace(union perf_event *event,
 	if (!chain)
 		goto exit;
 
-	if (perf_event__preprocess_sample(event, machine, &al, sample) < 0) {
+	if (machine__resolve(machine, &al, sample) < 0) {
 		fprintf(stderr, "problem processing %d event, skipping it.\n",
 			event->header.type);
 		goto exit;
@@ -522,13 +523,13 @@ static const char *cat_backtrace(union perf_event *event,
 				 * Discard all.
 				 */
 				zfree(&p);
-				goto exit;
+				goto exit_put;
 			}
 			continue;
 		}
 
 		tal.filtered = 0;
-		thread__find_addr_location(al.thread, machine, cpumode,
+		thread__find_addr_location(al.thread, cpumode,
 					   MAP__FUNCTION, ip, &tal);
 
 		if (tal.sym)
@@ -537,7 +538,8 @@ static const char *cat_backtrace(union perf_event *event,
 		else
 			fprintf(f, "..... %016" PRIx64 "\n", ip);
 	}
-
+exit_put:
+	addr_location__put(&al);
 exit:
 	fclose(f);
 
@@ -1598,6 +1600,7 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 	struct perf_data_file file = {
 		.path = input_name,
 		.mode = PERF_DATA_MODE_READ,
+		.force = tchart->force,
 	};
 
 	struct perf_session *session = perf_session__new(&file, false,
@@ -1605,7 +1608,9 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 	int ret = -EINVAL;
 
 	if (session == NULL)
-		return -ENOMEM;
+		return -1;
+
+	symbol__init(&session->header.env);
 
 	(void)perf_header__process_sections(&session->header,
 					    perf_data_file__fd(session->file),
@@ -1621,7 +1626,7 @@ static int __cmd_timechart(struct timechart *tchart, const char *output_name)
 		goto out_delete;
 	}
 
-	ret = perf_session__process_events(session, &tchart->tool);
+	ret = perf_session__process_events(session);
 	if (ret)
 		goto out_delete;
 
@@ -1920,7 +1925,7 @@ int cmd_timechart(int argc, const char **argv,
 			.fork		 = process_fork_event,
 			.exit		 = process_exit_event,
 			.sample		 = process_sample_event,
-			.ordered_samples = true,
+			.ordered_events	 = true,
 		},
 		.proc_num = 15,
 		.min_time = 1000000,
@@ -1940,8 +1945,9 @@ int cmd_timechart(int argc, const char **argv,
 	OPT_CALLBACK('p', "process", NULL, "process",
 		      "process selector. Pass a pid or process name.",
 		       parse_process),
-	OPT_STRING(0, "symfs", &symbol_conf.symfs, "directory",
-		    "Look for files with symbols relative to this directory"),
+	OPT_CALLBACK(0, "symfs", NULL, "directory",
+		     "Look for files with symbols relative to this directory",
+		     symbol__config_symfs),
 	OPT_INTEGER('n', "proc-num", &tchart.proc_num,
 		    "min. number of tasks to print"),
 	OPT_BOOLEAN('t', "topology", &tchart.topology,
@@ -1954,14 +1960,16 @@ int cmd_timechart(int argc, const char **argv,
 	OPT_CALLBACK(0, "io-merge-dist", &tchart.merge_dist, "time",
 		     "merge events that are merge-dist us apart",
 		     parse_time),
+	OPT_BOOLEAN('f', "force", &tchart.force, "don't complain, do it"),
 	OPT_END()
 	};
-	const char * const timechart_usage[] = {
+	const char * const timechart_subcommands[] = { "record", NULL };
+	const char *timechart_usage[] = {
 		"perf timechart [<options>] {record}",
 		NULL
 	};
 
-	const struct option record_options[] = {
+	const struct option timechart_record_options[] = {
 	OPT_BOOLEAN('P', "power-only", &tchart.power_only, "output power data only"),
 	OPT_BOOLEAN('T', "tasks-only", &tchart.tasks_only,
 		    "output processes data only"),
@@ -1970,22 +1978,21 @@ int cmd_timechart(int argc, const char **argv,
 	OPT_BOOLEAN('g', "callchain", &tchart.with_backtrace, "record callchain"),
 	OPT_END()
 	};
-	const char * const record_usage[] = {
+	const char * const timechart_record_usage[] = {
 		"perf timechart record [<options>]",
 		NULL
 	};
-	argc = parse_options(argc, argv, timechart_options, timechart_usage,
-			PARSE_OPT_STOP_AT_NON_OPTION);
+	argc = parse_options_subcommand(argc, argv, timechart_options, timechart_subcommands,
+			timechart_usage, PARSE_OPT_STOP_AT_NON_OPTION);
 
 	if (tchart.power_only && tchart.tasks_only) {
 		pr_err("-P and -T options cannot be used at the same time.\n");
 		return -1;
 	}
 
-	symbol__init();
-
 	if (argc && !strncmp(argv[0], "rec", 3)) {
-		argc = parse_options(argc, argv, record_options, record_usage,
+		argc = parse_options(argc, argv, timechart_record_options,
+				     timechart_record_usage,
 				     PARSE_OPT_STOP_AT_NON_OPTION);
 
 		if (tchart.power_only && tchart.tasks_only) {

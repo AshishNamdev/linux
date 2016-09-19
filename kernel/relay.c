@@ -81,10 +81,7 @@ static struct page **relay_alloc_page_array(unsigned int n_pages)
  */
 static void relay_free_page_array(struct page **array)
 {
-	if (is_vmalloc_addr(array))
-		vfree(array);
-	else
-		kfree(array);
+	kvfree(array);
 }
 
 /**
@@ -407,7 +404,7 @@ static inline void relay_set_buf_dentry(struct rchan_buf *buf,
 					struct dentry *dentry)
 {
 	buf->dentry = dentry;
-	buf->dentry->d_inode->i_size = buf->early_bytes;
+	d_inode(buf->dentry)->i_size = buf->early_bytes;
 }
 
 static struct dentry *relay_create_buf_file(struct rchan *chan,
@@ -454,6 +451,13 @@ static struct rchan_buf *relay_open_buf(struct rchan *chan, unsigned int cpu)
 		if (!dentry)
 			goto free_buf;
 		relay_set_buf_dentry(buf, dentry);
+	} else {
+		/* Only retrieve global info, nothing more, nothing less */
+		dentry = chan->cb->create_buf_file(NULL, NULL,
+						   S_IRUSR, buf,
+						   &chan->is_global);
+		if (WARN_ON(dentry))
+			goto free_buf;
 	}
 
  	buf->cpu = cpu;
@@ -565,6 +569,10 @@ static int relay_hotcpu_callback(struct notifier_block *nb,
  *	attributes specified.  The created channel buffer files
  *	will be named base_filename0...base_filenameN-1.  File
  *	permissions will be %S_IRUSR.
+ *
+ *	If opening a buffer (@parent = NULL) that you later wish to register
+ *	in a filesystem, call relay_late_setup_files() once the @parent dentry
+ *	is available.
  */
 struct rchan *relay_open(const char *base_filename,
 			 struct dentry *parent,
@@ -617,6 +625,7 @@ free_bufs:
 
 	kref_put(&chan->kref, relay_destroy_channel);
 	mutex_unlock(&relay_channels_mutex);
+	kfree(chan);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(relay_open);
@@ -642,8 +651,12 @@ static void __relay_set_buf_dentry(void *info)
  *
  *	Returns 0 if successful, non-zero otherwise.
  *
- *	Use to setup files for a previously buffer-only channel.
- *	Useful to do early tracing in kernel, before VFS is up, for example.
+ *	Use to setup files for a previously buffer-only channel created
+ *	by relay_open() with a NULL parent dentry.
+ *
+ *	For example, this is useful for perfomring early tracing in kernel,
+ *	before VFS is up and then exposing the early results once the dentry
+ *	is available.
  */
 int relay_late_setup_files(struct rchan *chan,
 			   const char *base_filename,
@@ -668,6 +681,20 @@ int relay_late_setup_files(struct rchan *chan,
 	}
 	chan->has_base_filename = 1;
 	chan->parent = parent;
+
+	if (chan->is_global) {
+		err = -EINVAL;
+		if (!WARN_ON_ONCE(!chan->buf[0])) {
+			dentry = relay_create_buf_file(chan, chan->buf[0], 0);
+			if (dentry && !WARN_ON_ONCE(!chan->is_global)) {
+				relay_set_buf_dentry(chan->buf[0], dentry);
+				err = 0;
+			}
+		}
+		mutex_unlock(&relay_channels_mutex);
+		return err;
+	}
+
 	curr_cpu = get_cpu();
 	/*
 	 * The CPU hotplug notifier ran before us and created buffers with
@@ -708,6 +735,7 @@ int relay_late_setup_files(struct rchan *chan,
 
 	return err;
 }
+EXPORT_SYMBOL_GPL(relay_late_setup_files);
 
 /**
  *	relay_switch_subbuf - switch to a new sub-buffer
@@ -733,7 +761,7 @@ size_t relay_switch_subbuf(struct rchan_buf *buf, size_t length)
 		buf->padding[old_subbuf] = buf->prev_padding;
 		buf->subbufs_produced++;
 		if (buf->dentry)
-			buf->dentry->d_inode->i_size +=
+			d_inode(buf->dentry)->i_size +=
 				buf->chan->subbuf_size -
 				buf->padding[old_subbuf];
 		else
@@ -1136,7 +1164,7 @@ static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 	if (!desc->count)
 		return 0;
 
-	mutex_lock(&file_inode(filp)->i_mutex);
+	inode_lock(file_inode(filp));
 	do {
 		if (!relay_file_read_avail(buf, *ppos))
 			break;
@@ -1156,7 +1184,7 @@ static ssize_t relay_file_read_subbufs(struct file *filp, loff_t *ppos,
 			*ppos = relay_file_read_end_pos(buf, read_start, ret);
 		}
 	} while (desc->count && ret);
-	mutex_unlock(&file_inode(filp)->i_mutex);
+	inode_unlock(file_inode(filp));
 
 	return desc->written;
 }

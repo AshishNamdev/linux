@@ -3,7 +3,7 @@
  * under the terms of the GNU General Public License version 2 as published
  * by the Free Software Foundation.
  *
- * Copyright (C) 2013 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2013 John Crispin <john@phrozen.org>
 */
 
 #include <linux/module.h>
@@ -58,7 +58,7 @@ static irqreturn_t rt_timer_irq(int irq, void *_rt)
 
 static int rt_timer_request(struct rt_timer *rt)
 {
-	int err = request_irq(rt->irq, rt_timer_irq, IRQF_DISABLED,
+	int err = request_irq(rt->irq, rt_timer_irq, 0,
 						dev_name(rt->dev), rt);
 	if (err) {
 		dev_err(rt->dev, "failed to request irq\n");
@@ -173,7 +173,6 @@ static struct platform_driver rt_timer_driver = {
 	.remove = rt_timer_remove,
 	.driver = {
 		.name		= "rt-timer",
-		.owner          = THIS_MODULE,
 		.of_match_table	= rt_timer_match
 	},
 };
@@ -181,5 +180,5 @@ static struct platform_driver rt_timer_driver = {
 module_platform_driver(rt_timer_driver);
 
 MODULE_DESCRIPTION("Ralink RT2880 timer");
-MODULE_AUTHOR("John Crispin <blogic@openwrt.org");
+MODULE_AUTHOR("John Crispin <john@phrozen.org");
 MODULE_LICENSE("GPL");

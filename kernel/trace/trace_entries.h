@@ -72,7 +72,7 @@ FTRACE_ENTRY_REG(function, ftrace_entry,
 );
 
 /* Function call entry */
-FTRACE_ENTRY(funcgraph_entry, ftrace_graph_ent_entry,
+FTRACE_ENTRY_PACKED(funcgraph_entry, ftrace_graph_ent_entry,
 
 	TRACE_GRAPH_ENT,
 
@@ -88,7 +88,7 @@ FTRACE_ENTRY(funcgraph_entry, ftrace_graph_ent_entry,
 );
 
 /* Function return entry */
-FTRACE_ENTRY(funcgraph_exit, ftrace_graph_ret_entry,
+FTRACE_ENTRY_PACKED(funcgraph_exit, ftrace_graph_ret_entry,
 
 	TRACE_GRAPH_RET,
 
@@ -223,7 +223,7 @@ FTRACE_ENTRY(bprint, bprint_entry,
 		__dynamic_array(	u32,	buf	)
 	),
 
-	F_printk("%pf: %s",
+	F_printk("%ps: %s",
 		 (void *)__entry->ip, __entry->fmt),
 
 	FILTER_OTHER
@@ -238,7 +238,7 @@ FTRACE_ENTRY(print, print_entry,
 		__dynamic_array(	char,	buf	)
 	),
 
-	F_printk("%pf: %s",
+	F_printk("%ps: %s",
 		 (void *)__entry->ip, __entry->buf),
 
 	FILTER_OTHER
@@ -253,7 +253,7 @@ FTRACE_ENTRY(bputs, bputs_entry,
 		__field(	const char *,	str	)
 	),
 
-	F_printk("%pf: %s",
+	F_printk("%ps: %s",
 		 (void *)__entry->ip, __entry->str),
 
 	FILTER_OTHER

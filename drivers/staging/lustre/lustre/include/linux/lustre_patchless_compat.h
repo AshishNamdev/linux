@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -43,7 +39,6 @@
 #include <linux/mm.h>
 #include <linux/hash.h>
 
-
 #define ll_delete_from_page_cache(page) delete_from_page_cache(page)
 
 static inline void
@@ -53,24 +48,12 @@ truncate_complete_page(struct address_space *mapping, struct page *page)
 		return;
 
 	if (PagePrivate(page))
-		page->mapping->a_ops->invalidatepage(page, 0, PAGE_CACHE_SIZE);
+		page->mapping->a_ops->invalidatepage(page, 0, PAGE_SIZE);
 
-	cancel_dirty_page(page, PAGE_SIZE);
+	cancel_dirty_page(page);
 	ClearPageMappedToDisk(page);
 	ll_delete_from_page_cache(page);
 }
-
-#ifdef ATTR_OPEN
-# define ATTR_FROM_OPEN ATTR_OPEN
-#else
-# ifndef ATTR_FROM_OPEN
-#  define ATTR_FROM_OPEN 0
-# endif
-#endif /* ATTR_OPEN */
-
-#ifndef ATTR_RAW
-#define ATTR_RAW 0
-#endif
 
 #ifndef ATTR_CTIME_SET
 /*

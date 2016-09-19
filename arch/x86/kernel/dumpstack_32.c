@@ -7,7 +7,7 @@
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
 #include <linux/kdebug.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/ptrace.h>
 #include <linux/kexec.h>
 #include <linux/sysfs.h>
@@ -61,15 +61,13 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 		bp = stack_frame(task, regs);
 
 	for (;;) {
-		struct thread_info *context;
 		void *end_stack;
 
 		end_stack = is_hardirq_stack(stack, cpu);
 		if (!end_stack)
 			end_stack = is_softirq_stack(stack, cpu);
 
-		context = task_thread_info(task);
-		bp = ops->walk_stack(context, stack, bp, ops, data,
+		bp = ops->walk_stack(task, stack, bp, ops, data,
 				     end_stack, &graph);
 
 		/* Stop if not on irq stack */
@@ -98,7 +96,9 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 	int i;
 
 	if (sp == NULL) {
-		if (task)
+		if (regs)
+			sp = (unsigned long *)regs->sp;
+		else if (task)
 			sp = (unsigned long *)task->thread.sp;
 		else
 			sp = (unsigned long *)&sp;
@@ -108,9 +108,12 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 	for (i = 0; i < kstack_depth_to_print; i++) {
 		if (kstack_end(stack))
 			break;
-		if (i && ((i % STACKSLOTS_PER_LINE) == 0))
-			pr_cont("\n");
-		pr_cont(" %08lx", *stack++);
+		if ((i % STACKSLOTS_PER_LINE) == 0) {
+			if (i != 0)
+				pr_cont("\n");
+			printk("%s %08lx", log_lvl, *stack++);
+		} else
+			pr_cont(" %08lx", *stack++);
 		touch_nmi_watchdog();
 	}
 	pr_cont("\n");
@@ -123,13 +126,13 @@ void show_regs(struct pt_regs *regs)
 	int i;
 
 	show_regs_print_info(KERN_EMERG);
-	__show_regs(regs, !user_mode_vm(regs));
+	__show_regs(regs, !user_mode(regs));
 
 	/*
 	 * When in-kernel, we also print out the stack and code at the
 	 * time of the fault..
 	 */
-	if (!user_mode_vm(regs)) {
+	if (!user_mode(regs)) {
 		unsigned int code_prologue = code_bytes * 43 / 64;
 		unsigned int code_len = code_bytes;
 		unsigned char c;

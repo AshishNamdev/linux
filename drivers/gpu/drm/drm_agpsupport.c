@@ -34,8 +34,7 @@
 #include <drm/drmP.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-
-#if __OS_HAS_AGP
+#include "drm_legacy.h"
 
 #include <asm/agp.h>
 
@@ -424,7 +423,7 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 }
 
 /**
- * drm_agp_clear - Clear AGP resource list
+ * drm_legacy_agp_clear - Clear AGP resource list
  * @dev: DRM device
  *
  * Iterate over all AGP resources and remove them. But keep the AGP head
@@ -435,7 +434,7 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
  * resources from getting destroyed. Drivers are responsible of cleaning them up
  * during device shutdown.
  */
-void drm_agp_clear(struct drm_device *dev)
+void drm_legacy_agp_clear(struct drm_device *dev)
 {
 	struct drm_agp_mem *entry, *tempe;
 
@@ -501,5 +500,3 @@ drm_agp_bind_pages(struct drm_device *dev,
 	return mem;
 }
 EXPORT_SYMBOL(drm_agp_bind_pages);
-
-#endif /* __OS_HAS_AGP */

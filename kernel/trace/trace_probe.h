@@ -25,7 +25,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
-#include <linux/debugfs.h>
+#include <linux/tracefs.h>
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/ctype.h>
@@ -102,6 +102,7 @@ enum {
 	FETCH_MTD_reg = 0,
 	FETCH_MTD_stack,
 	FETCH_MTD_retval,
+	FETCH_MTD_comm,
 	FETCH_MTD_memory,
 	FETCH_MTD_symbol,
 	FETCH_MTD_deref,
@@ -183,6 +184,14 @@ DECLARE_BASIC_FETCH_FUNCS(bitfield);
 #define fetch_bitfield_string			NULL
 #define fetch_bitfield_string_size		NULL
 
+/* comm only makes sense as a string */
+#define fetch_comm_u8		NULL
+#define fetch_comm_u16		NULL
+#define fetch_comm_u32		NULL
+#define fetch_comm_u64		NULL
+DECLARE_FETCH_FUNC(comm, string);
+DECLARE_FETCH_FUNC(comm, string_size);
+
 /*
  * Define macro for basic types - we don't need to define s* types, because
  * we have to care only about bitwidth at recording time.
@@ -213,6 +222,7 @@ DEFINE_FETCH_##method(u64)
 ASSIGN_FETCH_FUNC(reg, ftype),				\
 ASSIGN_FETCH_FUNC(stack, ftype),			\
 ASSIGN_FETCH_FUNC(retval, ftype),			\
+ASSIGN_FETCH_FUNC(comm, ftype),				\
 ASSIGN_FETCH_FUNC(memory, ftype),			\
 ASSIGN_FETCH_FUNC(symbol, ftype),			\
 ASSIGN_FETCH_FUNC(deref, ftype),			\
@@ -228,13 +238,6 @@ ASSIGN_FETCH_FUNC(file_offset, ftype),			\
 
 #define FETCH_TYPE_STRING	0
 #define FETCH_TYPE_STRSIZE	1
-
-/*
- * Fetch type information table.
- * It's declared as a weak symbol due to conditional compilation.
- */
-extern __weak const struct fetch_type kprobes_fetch_type_table[];
-extern __weak const struct fetch_type uprobes_fetch_type_table[];
 
 #ifdef CONFIG_KPROBE_EVENT
 struct symbol_cache;
@@ -279,8 +282,8 @@ struct probe_arg {
 
 struct trace_probe {
 	unsigned int			flags;	/* For TP_FLAG_* */
-	struct ftrace_event_class	class;
-	struct ftrace_event_call	call;
+	struct trace_event_class	class;
+	struct trace_event_call		call;
 	struct list_head 		files;
 	ssize_t				size;	/* trace entry size */
 	unsigned int			nr_args;
@@ -288,7 +291,7 @@ struct trace_probe {
 };
 
 struct event_file_link {
-	struct ftrace_event_file	*file;
+	struct trace_event_file		*file;
 	struct list_head		list;
 };
 
@@ -309,19 +312,19 @@ static nokprobe_inline void call_fetch(struct fetch_param *fprm,
 }
 
 /* Check the name is good for event/group/fields */
-static inline int is_good_name(const char *name)
+static inline bool is_good_name(const char *name)
 {
 	if (!isalpha(*name) && *name != '_')
-		return 0;
+		return false;
 	while (*++name != '\0') {
 		if (!isalpha(*name) && !isdigit(*name) && *name != '_')
-			return 0;
+			return false;
 	}
-	return 1;
+	return true;
 }
 
 static inline struct event_file_link *
-find_event_file_link(struct trace_probe *tp, struct ftrace_event_file *file)
+find_event_file_link(struct trace_probe *tp, struct trace_event_file *file)
 {
 	struct event_file_link *link;
 
@@ -333,7 +336,8 @@ find_event_file_link(struct trace_probe *tp, struct ftrace_event_file *file)
 }
 
 extern int traceprobe_parse_probe_arg(char *arg, ssize_t *size,
-		   struct probe_arg *parg, bool is_return, bool is_kprobe);
+		   struct probe_arg *parg, bool is_return, bool is_kprobe,
+		   const struct fetch_type *ftbl);
 
 extern int traceprobe_conflict_field_name(const char *name,
 			       struct probe_arg *args, int narg);

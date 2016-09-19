@@ -93,40 +93,9 @@ static int pcie_port_resume_noirq(struct device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_RUNTIME
-struct d3cold_info {
-	bool no_d3cold;
-	unsigned int d3cold_delay;
-};
-
-static int pci_dev_d3cold_info(struct pci_dev *pdev, void *data)
-{
-	struct d3cold_info *info = data;
-
-	info->d3cold_delay = max_t(unsigned int, pdev->d3cold_delay,
-				   info->d3cold_delay);
-	if (pdev->no_d3cold)
-		info->no_d3cold = true;
-	return 0;
-}
-
 static int pcie_port_runtime_suspend(struct device *dev)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
-	struct d3cold_info d3cold_info = {
-		.no_d3cold	= false,
-		.d3cold_delay	= PCI_PM_D3_WAIT,
-	};
-
-	/*
-	 * If any subordinate device disable D3cold, we should not put
-	 * the port into D3cold.  The D3cold delay of port should be
-	 * the max of that of all subordinate devices.
-	 */
-	pci_walk_bus(pdev->subordinate, pci_dev_d3cold_info, &d3cold_info);
-	pdev->no_d3cold = d3cold_info.no_d3cold;
-	pdev->d3cold_delay = d3cold_info.d3cold_delay;
-	return 0;
+	return to_pci_dev(dev)->bridge_d3 ? 0 : -EBUSY;
 }
 
 static int pcie_port_runtime_resume(struct device *dev)
@@ -134,35 +103,15 @@ static int pcie_port_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static int pci_dev_pme_poll(struct pci_dev *pdev, void *data)
-{
-	bool *pme_poll = data;
-
-	if (pdev->pme_poll)
-		*pme_poll = true;
-	return 0;
-}
-
 static int pcie_port_runtime_idle(struct device *dev)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
-	bool pme_poll = false;
-
 	/*
-	 * If any subordinate device needs pme poll, we should keep
-	 * the port in D0, because we need port in D0 to poll it.
+	 * Assume the PCI core has set bridge_d3 whenever it thinks the port
+	 * should be good to go to D3.  Everything else, including moving
+	 * the port to D3, is handled by the PCI core.
 	 */
-	pci_walk_bus(pdev->subordinate, pci_dev_pme_poll, &pme_poll);
-	/* Delay for a short while to prevent too frequent suspend/resume */
-	if (!pme_poll)
-		pm_schedule_suspend(dev, 10);
-	return -EBUSY;
+	return to_pci_dev(dev)->bridge_d3 ? 0 : -EBUSY;
 }
-#else
-#define pcie_port_runtime_suspend	NULL
-#define pcie_port_runtime_resume	NULL
-#define pcie_port_runtime_idle		NULL
-#endif
 
 static const struct dev_pm_ops pcie_portdrv_pm_ops = {
 	.suspend	= pcie_port_device_suspend,
@@ -173,7 +122,7 @@ static const struct dev_pm_ops pcie_portdrv_pm_ops = {
 	.restore	= pcie_port_device_resume,
 	.resume_noirq	= pcie_port_resume_noirq,
 	.runtime_suspend = pcie_port_runtime_suspend,
-	.runtime_resume = pcie_port_runtime_resume,
+	.runtime_resume	= pcie_port_runtime_resume,
 	.runtime_idle	= pcie_port_runtime_idle,
 };
 
@@ -208,16 +157,39 @@ static int pcie_portdrv_probe(struct pci_dev *dev,
 		return status;
 
 	pci_save_state(dev);
+
 	/*
-	 * D3cold may not work properly on some PCIe port, so disable
-	 * it by default.
+	 * Prevent runtime PM if the port is advertising support for PCIe
+	 * hotplug.  Otherwise the BIOS hotplug SMI code might not be able
+	 * to enumerate devices behind this port properly (the port is
+	 * powered down preventing all config space accesses to the
+	 * subordinate devices).  We can't be sure for native PCIe hotplug
+	 * either so prevent that as well.
 	 */
-	dev->d3cold_allowed = false;
+	if (!dev->is_hotplug_bridge) {
+		/*
+		 * Keep the port resumed 100ms to make sure things like
+		 * config space accesses from userspace (lspci) will not
+		 * cause the port to repeatedly suspend and resume.
+		 */
+		pm_runtime_set_autosuspend_delay(&dev->dev, 100);
+		pm_runtime_use_autosuspend(&dev->dev);
+		pm_runtime_mark_last_busy(&dev->dev);
+		pm_runtime_put_autosuspend(&dev->dev);
+		pm_runtime_allow(&dev->dev);
+	}
+
 	return 0;
 }
 
 static void pcie_portdrv_remove(struct pci_dev *dev)
 {
+	if (!dev->is_hotplug_bridge) {
+		pm_runtime_forbid(&dev->dev);
+		pm_runtime_get_noresume(&dev->dev);
+		pm_runtime_dont_use_autosuspend(&dev->dev);
+	}
+
 	pcie_port_device_remove(dev);
 }
 

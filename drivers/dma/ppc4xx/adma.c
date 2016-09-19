@@ -16,10 +16,6 @@
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59
- * Temple Place - Suite 330, Boston, MA  02111-1307, USA.
- *
  * The full GNU General Public License is included in this distribution in the
  * file called COPYING.
  */
@@ -4088,7 +4084,6 @@ static int ppc440spe_adma_probe(struct platform_device *ofdev)
 	/* create a device */
 	adev = kzalloc(sizeof(*adev), GFP_KERNEL);
 	if (!adev) {
-		dev_err(&ofdev->dev, "failed to allocate device\n");
 		initcode = PPC_ADMA_INIT_ALLOC;
 		ret = -ENOMEM;
 		goto err_adev_alloc;
@@ -4149,7 +4144,6 @@ static int ppc440spe_adma_probe(struct platform_device *ofdev)
 	/* create a channel */
 	chan = kzalloc(sizeof(*chan), GFP_KERNEL);
 	if (!chan) {
-		dev_err(&ofdev->dev, "can't allocate channel structure\n");
 		initcode = PPC_ADMA_INIT_CHANNEL;
 		ret = -ENOMEM;
 		goto err_chan_alloc;
@@ -4579,7 +4573,6 @@ static struct platform_driver ppc440spe_adma_driver = {
 	.remove = ppc440spe_adma_remove,
 	.driver = {
 		.name = "PPC440SP(E)-ADMA",
-		.owner = THIS_MODULE,
 		.of_match_table = ppc440spe_adma_of_match,
 	},
 };

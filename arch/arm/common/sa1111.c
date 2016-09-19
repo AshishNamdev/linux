@@ -196,11 +196,10 @@ static struct sa1111_dev_info sa1111_devices[] = {
  * active IRQs causes the interrupt output to pulse, the upper levels
  * will call us again if there are more interrupts to process.
  */
-static void
-sa1111_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void sa1111_irq_handler(struct irq_desc *desc)
 {
 	unsigned int stat0, stat1, i;
-	struct sa1111 *sachip = irq_get_handler_data(irq);
+	struct sa1111 *sachip = irq_desc_get_handler_data(desc);
 	void __iomem *mapbase = sachip->base + SA1111_INTC;
 
 	stat0 = sa1111_readl(mapbase + SA1111_INTSTATCLR0);
@@ -213,7 +212,7 @@ sa1111_irq_handler(unsigned int irq, struct irq_desc *desc)
 	sa1111_writel(stat1, mapbase + SA1111_INTSTATCLR1);
 
 	if (stat0 == 0 && stat1 == 0) {
-		do_bad_IRQ(irq, desc);
+		do_bad_IRQ(desc);
 		return;
 	}
 
@@ -282,8 +281,8 @@ static int sa1111_retrigger_lowirq(struct irq_data *d)
 	}
 
 	if (i == 8)
-		printk(KERN_ERR "Danger Will Robinson: failed to "
-			"re-trigger IRQ%d\n", d->irq);
+		pr_err("Danger Will Robinson: failed to re-trigger IRQ%d\n",
+		       d->irq);
 	return i == 8 ? -1 : 0;
 }
 
@@ -384,8 +383,8 @@ static int sa1111_retrigger_highirq(struct irq_data *d)
 	}
 
 	if (i == 8)
-		printk(KERN_ERR "Danger Will Robinson: failed to "
-			"re-trigger IRQ%d\n", d->irq);
+		pr_err("Danger Will Robinson: failed to re-trigger IRQ%d\n",
+		       d->irq);
 	return i == 8 ? -1 : 0;
 }
 
@@ -473,8 +472,8 @@ static int sa1111_setup_irq(struct sa1111 *sachip, unsigned irq_base)
 	 * specifies that S0ReadyInt and S1ReadyInt should be '1'.
 	 */
 	sa1111_writel(0, irqbase + SA1111_INTPOL0);
-	sa1111_writel(SA1111_IRQMASK_HI(IRQ_S0_READY_NINT) |
-		      SA1111_IRQMASK_HI(IRQ_S1_READY_NINT),
+	sa1111_writel(BIT(IRQ_S0_READY_NINT & 31) |
+		      BIT(IRQ_S1_READY_NINT & 31),
 		      irqbase + SA1111_INTPOL1);
 
 	/* clear all IRQs */
@@ -486,7 +485,7 @@ static int sa1111_setup_irq(struct sa1111 *sachip, unsigned irq_base)
 		irq_set_chip_and_handler(irq, &sa1111_low_chip,
 					 handle_edge_irq);
 		irq_set_chip_data(irq, sachip);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	for (i = AUDXMTDMADONEA; i <= IRQ_S1_BVD1_STSCHG; i++) {
@@ -494,15 +493,15 @@ static int sa1111_setup_irq(struct sa1111 *sachip, unsigned irq_base)
 		irq_set_chip_and_handler(irq, &sa1111_high_chip,
 					 handle_edge_irq);
 		irq_set_chip_data(irq, sachip);
-		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	/*
 	 * Register SA1111 interrupt
 	 */
 	irq_set_irq_type(sachip->irq, IRQ_TYPE_EDGE_RISING);
-	irq_set_handler_data(sachip->irq, sachip);
-	irq_set_chained_handler(sachip->irq, sa1111_irq_handler);
+	irq_set_chained_handler_and_data(sachip->irq, sa1111_irq_handler,
+					 sachip);
 
 	dev_info(sachip->dev, "Providing IRQ%u-%u\n",
 		sachip->irq_base, sachip->irq_base + SA1111_IRQ_NR - 1);
@@ -740,9 +739,8 @@ static int __sa1111_probe(struct device *me, struct resource *mem, int irq)
 		goto err_unmap;
 	}
 
-	printk(KERN_INFO "SA1111 Microprocessor Companion Chip: "
-		"silicon revision %lx, metal revision %lx\n",
-		(id & SKID_SIREV_MASK)>>4, (id & SKID_MTREV_MASK));
+	pr_info("SA1111 Microprocessor Companion Chip: silicon revision %lx, metal revision %lx\n",
+		(id & SKID_SIREV_MASK) >> 4, id & SKID_MTREV_MASK);
 
 	/*
 	 * We found it.  Wake the chip up, and initialise.
@@ -756,7 +754,7 @@ static int __sa1111_probe(struct device *me, struct resource *mem, int irq)
 	if (sachip->irq != NO_IRQ) {
 		ret = sa1111_setup_irq(sachip, pd->irq_base);
 		if (ret)
-			goto err_unmap;
+			goto err_clk;
 	}
 
 #ifdef CONFIG_ARCH_SA1100
@@ -801,6 +799,8 @@ static int __sa1111_probe(struct device *me, struct resource *mem, int irq)
 
 	return 0;
 
+ err_clk:
+	clk_disable(sachip->clk);
  err_unmap:
 	iounmap(sachip->base);
  err_clk_unprep:
@@ -837,8 +837,7 @@ static void __sa1111_remove(struct sa1111 *sachip)
 	clk_unprepare(sachip->clk);
 
 	if (sachip->irq != NO_IRQ) {
-		irq_set_chained_handler(sachip->irq, NULL);
-		irq_set_handler_data(sachip->irq, NULL);
+		irq_set_chained_handler_and_data(sachip->irq, NULL, NULL);
 		irq_free_descs(sachip->irq_base, SA1111_IRQ_NR);
 
 		release_mem_region(sachip->phys + SA1111_INTC, 512);
@@ -872,9 +871,9 @@ struct sa1111_save_data {
 
 #ifdef CONFIG_PM
 
-static int sa1111_suspend(struct platform_device *dev, pm_message_t state)
+static int sa1111_suspend_noirq(struct device *dev)
 {
-	struct sa1111 *sachip = platform_get_drvdata(dev);
+	struct sa1111 *sachip = dev_get_drvdata(dev);
 	struct sa1111_save_data *save;
 	unsigned long flags;
 	unsigned int val;
@@ -937,9 +936,9 @@ static int sa1111_suspend(struct platform_device *dev, pm_message_t state)
  *	restored by their respective drivers, and must be called
  *	via LDM after this function.
  */
-static int sa1111_resume(struct platform_device *dev)
+static int sa1111_resume_noirq(struct device *dev)
 {
-	struct sa1111 *sachip = platform_get_drvdata(dev);
+	struct sa1111 *sachip = dev_get_drvdata(dev);
 	struct sa1111_save_data *save;
 	unsigned long flags, id;
 	void __iomem *base;
@@ -955,7 +954,7 @@ static int sa1111_resume(struct platform_device *dev)
 	id = sa1111_readl(sachip->base + SA1111_SKID);
 	if ((id & SKID_ID_MASK) != SKID_SA1111_ID) {
 		__sa1111_remove(sachip);
-		platform_set_drvdata(dev, NULL);
+		dev_set_drvdata(dev, NULL);
 		kfree(save);
 		return 0;
 	}
@@ -1006,8 +1005,8 @@ static int sa1111_resume(struct platform_device *dev)
 }
 
 #else
-#define sa1111_suspend NULL
-#define sa1111_resume  NULL
+#define sa1111_suspend_noirq NULL
+#define sa1111_resume_noirq  NULL
 #endif
 
 static int sa1111_probe(struct platform_device *pdev)
@@ -1020,7 +1019,7 @@ static int sa1111_probe(struct platform_device *pdev)
 		return -EINVAL;
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return -ENXIO;
+		return irq;
 
 	return __sa1111_probe(&pdev->dev, mem, irq);
 }
@@ -1041,6 +1040,11 @@ static int sa1111_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static struct dev_pm_ops sa1111_pm_ops = {
+	.suspend_noirq = sa1111_suspend_noirq,
+	.resume_noirq = sa1111_resume_noirq,
+};
+
 /*
  *	Not sure if this should be on the system bus or not yet.
  *	We really want some way to register a system device at
@@ -1053,11 +1057,9 @@ static int sa1111_remove(struct platform_device *pdev)
 static struct platform_driver sa1111_device_driver = {
 	.probe		= sa1111_probe,
 	.remove		= sa1111_remove,
-	.suspend	= sa1111_suspend,
-	.resume		= sa1111_resume,
 	.driver		= {
 		.name	= "sa1111",
-		.owner	= THIS_MODULE,
+		.pm	= &sa1111_pm_ops,
 	},
 };
 
@@ -1294,7 +1296,7 @@ static int sa1111_match(struct device *_dev, struct device_driver *_drv)
 	struct sa1111_dev *dev = SA1111_DEV(_dev);
 	struct sa1111_driver *drv = SA1111_DRV(_drv);
 
-	return dev->devid & drv->devid;
+	return !!(dev->devid & drv->devid);
 }
 
 static int sa1111_bus_suspend(struct device *dev, pm_message_t state)

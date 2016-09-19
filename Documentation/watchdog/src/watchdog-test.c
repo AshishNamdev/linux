@@ -2,6 +2,7 @@
  * Watchdog Driver Test Program
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include <linux/watchdog.h>
 
 int fd;
+const char v = 'V';
 
 /*
  * This function simply sends an IOCTL to the driver, which in turn ticks
@@ -23,6 +25,7 @@ static void keep_alive(void)
 {
     int dummy;
 
+    printf(".");
     ioctl(fd, WDIOC_KEEPALIVE, &dummy);
 }
 
@@ -33,20 +36,28 @@ static void keep_alive(void)
 
 static void term(int sig)
 {
+    int ret = write(fd, &v, 1);
+
     close(fd);
-    fprintf(stderr, "Stopping watchdog ticks...\n");
+    if (ret < 0)
+	printf("\nStopping watchdog ticks failed (%d)...\n", errno);
+    else
+	printf("\nStopping watchdog ticks...\n");
     exit(0);
 }
 
 int main(int argc, char *argv[])
 {
     int flags;
+    unsigned int ping_rate = 1;
+    int ret;
+
+    setbuf(stdout, NULL);
 
     fd = open("/dev/watchdog", O_WRONLY);
 
     if (fd == -1) {
-	fprintf(stderr, "Watchdog device not enabled.\n");
-	fflush(stderr);
+	printf("Watchdog device not enabled.\n");
 	exit(-1);
     }
 
@@ -54,33 +65,41 @@ int main(int argc, char *argv[])
 	if (!strncasecmp(argv[1], "-d", 2)) {
 	    flags = WDIOS_DISABLECARD;
 	    ioctl(fd, WDIOC_SETOPTIONS, &flags);
-	    fprintf(stderr, "Watchdog card disabled.\n");
-	    fflush(stderr);
+	    printf("Watchdog card disabled.\n");
 	    goto end;
 	} else if (!strncasecmp(argv[1], "-e", 2)) {
 	    flags = WDIOS_ENABLECARD;
 	    ioctl(fd, WDIOC_SETOPTIONS, &flags);
-	    fprintf(stderr, "Watchdog card enabled.\n");
-	    fflush(stderr);
+	    printf("Watchdog card enabled.\n");
 	    goto end;
+	} else if (!strncasecmp(argv[1], "-t", 2) && argv[2]) {
+	    flags = atoi(argv[2]);
+	    ioctl(fd, WDIOC_SETTIMEOUT, &flags);
+	    printf("Watchdog timeout set to %u seconds.\n", flags);
+	    goto end;
+	} else if (!strncasecmp(argv[1], "-p", 2) && argv[2]) {
+	    ping_rate = strtoul(argv[2], NULL, 0);
+	    printf("Watchdog ping rate set to %u seconds.\n", ping_rate);
 	} else {
-	    fprintf(stderr, "-d to disable, -e to enable.\n");
-	    fprintf(stderr, "run by itself to tick the card.\n");
-	    fflush(stderr);
+	    printf("-d to disable, -e to enable, -t <n> to set " \
+		"the timeout,\n-p <n> to set the ping rate, and \n");
+	    printf("run by itself to tick the card.\n");
 	    goto end;
 	}
-    } else {
-	fprintf(stderr, "Watchdog Ticking Away!\n");
-	fflush(stderr);
     }
+
+    printf("Watchdog Ticking Away!\n");
 
     signal(SIGINT, term);
 
     while(1) {
 	keep_alive();
-	sleep(1);
+	sleep(ping_rate);
     }
 end:
+    ret = write(fd, &v, 1);
+    if (ret < 0)
+	printf("Stopping watchdog ticks failed (%d)...\n", errno);
     close(fd);
     return 0;
 }

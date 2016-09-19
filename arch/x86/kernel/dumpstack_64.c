@@ -7,7 +7,7 @@
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
 #include <linux/kdebug.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/ptrace.h>
 #include <linux/kexec.h>
 #include <linux/sysfs.h>
@@ -24,7 +24,6 @@ static char x86_stack_ids[][8] = {
 		[ DEBUG_STACK-1			]	= "#DB",
 		[ NMI_STACK-1			]	= "NMI",
 		[ DOUBLEFAULT_STACK-1		]	= "#DF",
-		[ STACKFAULT_STACK-1		]	= "#SS",
 		[ MCE_STACK-1			]	= "#MC",
 #if DEBUG_STKSZ > EXCEPTION_STKSZ
 		[ N_EXCEPTION_STACKS ...
@@ -154,7 +153,6 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 		const struct stacktrace_ops *ops, void *data)
 {
 	const unsigned cpu = get_cpu();
-	struct thread_info *tinfo;
 	unsigned long *irq_stack = (unsigned long *)per_cpu(irq_stack_ptr, cpu);
 	unsigned long dummy;
 	unsigned used = 0;
@@ -180,7 +178,6 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 	 * current stack address. If the stacks consist of nested
 	 * exceptions
 	 */
-	tinfo = task_thread_info(task);
 	while (!done) {
 		unsigned long *stack_end;
 		enum stack_type stype;
@@ -203,7 +200,7 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 			if (ops->stack(data, id) < 0)
 				break;
 
-			bp = ops->walk_stack(tinfo, stack, bp, ops,
+			bp = ops->walk_stack(task, stack, bp, ops,
 					     data, stack_end, &graph);
 			ops->stack(data, "<EOE>");
 			/*
@@ -219,7 +216,7 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 
 			if (ops->stack(data, "IRQ") < 0)
 				break;
-			bp = ops->walk_stack(tinfo, stack, bp,
+			bp = ops->walk_stack(task, stack, bp,
 				     ops, data, stack_end, &graph);
 			/*
 			 * We link to the next stack (which would be
@@ -241,7 +238,7 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 	/*
 	 * This handles the process stack:
 	 */
-	bp = ops->walk_stack(tinfo, stack, bp, ops, data, NULL, &graph);
+	bp = ops->walk_stack(task, stack, bp, ops, data, NULL, &graph);
 	put_cpu();
 }
 EXPORT_SYMBOL(dump_trace);
@@ -267,7 +264,9 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 	 * back trace for this cpu:
 	 */
 	if (sp == NULL) {
-		if (task)
+		if (regs)
+			sp = (unsigned long *)regs->sp;
+		else if (task)
 			sp = (unsigned long *)task->thread.sp;
 		else
 			sp = (unsigned long *)&sp;
@@ -275,18 +274,29 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 
 	stack = sp;
 	for (i = 0; i < kstack_depth_to_print; i++) {
+		unsigned long word;
+
 		if (stack >= irq_stack && stack <= irq_stack_end) {
 			if (stack == irq_stack_end) {
 				stack = (unsigned long *) (irq_stack_end[-1]);
 				pr_cont(" <EOI> ");
 			}
 		} else {
-		if (((long) stack & (THREAD_SIZE-1)) == 0)
+		if (kstack_end(stack))
 			break;
 		}
-		if (i && ((i % STACKSLOTS_PER_LINE) == 0))
-			pr_cont("\n");
-		pr_cont(" %016lx", *stack++);
+
+		if (probe_kernel_address(stack, word))
+			break;
+
+		if ((i % STACKSLOTS_PER_LINE) == 0) {
+			if (i != 0)
+				pr_cont("\n");
+			printk("%s %016lx", log_lvl, word);
+		} else
+			pr_cont(" %016lx", word);
+
+		stack++;
 		touch_nmi_watchdog();
 	}
 	preempt_enable();

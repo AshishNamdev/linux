@@ -30,7 +30,7 @@
 #define DRIVER_NAME "bestcomm-core"
 
 /* MPC5200 device tree match tables */
-static struct of_device_id mpc52xx_sram_ids[] = {
+static const struct of_device_id mpc52xx_sram_ids[] = {
 	{ .compatible = "fsl,mpc5200-sram", },
 	{ .compatible = "mpc5200-sram", },
 	{}
@@ -397,8 +397,6 @@ static int mpc52xx_bcom_probe(struct platform_device *op)
 	/* Get a clean struct */
 	bcom_eng = kzalloc(sizeof(struct bcom_engine), GFP_KERNEL);
 	if (!bcom_eng) {
-		printk(KERN_ERR DRIVER_NAME ": "
-			"Can't allocate state structure\n");
 		rv = -ENOMEM;
 		goto error_sramclean;
 	}
@@ -481,7 +479,7 @@ static int mpc52xx_bcom_remove(struct platform_device *op)
 	return 0;
 }
 
-static struct of_device_id mpc52xx_bcom_of_match[] = {
+static const struct of_device_id mpc52xx_bcom_of_match[] = {
 	{ .compatible = "fsl,mpc5200-bestcomm", },
 	{ .compatible = "mpc5200-bestcomm", },
 	{},
@@ -495,7 +493,6 @@ static struct platform_driver mpc52xx_bcom_of_platform_driver = {
 	.remove		= mpc52xx_bcom_remove,
 	.driver = {
 		.name = DRIVER_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = mpc52xx_bcom_of_match,
 	},
 };

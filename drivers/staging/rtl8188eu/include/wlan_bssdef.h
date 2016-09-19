@@ -11,11 +11,6 @@
  * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- *
  ******************************************************************************/
 #ifndef __WLAN_BSSDEF_H__
 #define __WLAN_BSSDEF_H__
@@ -154,16 +149,6 @@ struct ndis_802_11_assoc_info {
 
 enum ndis_802_11_reload_def {
 	Ndis802_11ReloadWEPKeys
-};
-
-/*  Key mapping keys require a BSSID */
-struct ndis_802_11_key {
-	u32           Length;             /*  Length of this structure */
-	u32           KeyIndex;
-	u32           KeyLength;          /*  length of key in bytes */
-	unsigned char BSSID[ETH_ALEN];
-	unsigned long long KeyRSC;
-	u8           KeyMaterial[32];  /* var len depending on above field */
 };
 
 struct ndis_802_11_remove_key {

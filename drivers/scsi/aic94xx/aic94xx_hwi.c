@@ -477,7 +477,7 @@ static int asd_init_chip(struct asd_ha_struct *asd_ha)
 
 	err = asd_start_seqs(asd_ha);
 	if (err) {
-		asd_printk("coudln't start seqs for %s\n",
+		asd_printk("couldn't start seqs for %s\n",
 			   pci_name(asd_ha->pcidev));
 		goto out;
 	}
@@ -1200,8 +1200,7 @@ static void asd_start_scb_timers(struct list_head *list)
  * Case A: we can send the whole batch at once.  Increment "pending"
  * in the beginning of this function, when it is checked, in order to
  * eliminate races when this function is called by multiple processes.
- * Case B: should never happen if the managing layer considers
- * lldd_queue_size.
+ * Case B: should never happen.
  */
 int asd_post_ascb_list(struct asd_ha_struct *asd_ha, struct asd_ascb *ascb,
 		       int num)

@@ -525,8 +525,8 @@ static void __init armadillo5x0_init(void)
 	imx31_add_mxc_nand(&armadillo5x0_nand_board_info);
 
 	/* set NAND page size to 2k if not configured via boot mode pins */
-	__raw_writel(__raw_readl(mx3_ccm_base + MXC_CCM_RCSR) |
-					(1 << 30), mx3_ccm_base + MXC_CCM_RCSR);
+	imx_writel(imx_readl(mx3_ccm_base + MXC_CCM_RCSR) | (1 << 30),
+		   mx3_ccm_base + MXC_CCM_RCSR);
 
 	/* RTC */
 	/* Get RTC IRQ and register the chip */
@@ -537,7 +537,7 @@ static void __init armadillo5x0_init(void)
 			gpio_free(ARMADILLO5X0_RTC_GPIO);
 	}
 	if (armadillo5x0_i2c_rtc.irq == 0)
-		pr_warning("armadillo5x0_init: failed to get RTC IRQ\n");
+		pr_warn("armadillo5x0_init: failed to get RTC IRQ\n");
 	i2c_register_board_info(1, &armadillo5x0_i2c_rtc, 1);
 
 	/* USB */
