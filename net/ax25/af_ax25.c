@@ -805,6 +805,9 @@ static int ax25_create(struct net *net, struct socket *sock, int protocol,
 	struct sock *sk;
 	ax25_cb *ax25;
 
+	if (protocol < 0 || protocol > SK_PROTOCOL_MAX)
+		return -EINVAL;
+
 	if (!net_eq(net, &init_net))
 		return -EAFNOSUPPORT;
 
@@ -973,7 +976,8 @@ static int ax25_release(struct socket *sock)
 			release_sock(sk);
 			ax25_disconnect(ax25, 0);
 			lock_sock(sk);
-			ax25_destroy_socket(ax25);
+			if (!sock_flag(ax25->sk, SOCK_DESTROY))
+				ax25_destroy_socket(ax25);
 			break;
 
 		case AX25_STATE_3:

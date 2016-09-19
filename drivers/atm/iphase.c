@@ -112,7 +112,8 @@ static void ia_enque_head_rtn_q (IARTN_Q *que, IARTN_Q * data)
 
 static int ia_enque_rtn_q (IARTN_Q *que, struct desc_tbl_t data) {
    IARTN_Q *entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
-   if (!entry) return -1;
+   if (!entry)
+      return -ENOMEM;
    entry->data = data;
    entry->next = NULL;
    if (que->next == NULL) 
@@ -1127,7 +1128,7 @@ static int rx_pkt(struct atm_dev *dev)
 	/* make the ptr point to the corresponding buffer desc entry */  
 	buf_desc_ptr += desc;	  
         if (!desc || (desc > iadev->num_rx_desc) || 
-                      ((buf_desc_ptr->vc_index & 0xffff) > iadev->num_vc)) { 
+                      ((buf_desc_ptr->vc_index & 0xffff) >= iadev->num_vc)) {
             free_desc(dev, desc);
             IF_ERR(printk("IA: bad descriptor desc = %d \n", desc);)
             return -1;
@@ -1175,7 +1176,7 @@ static int rx_pkt(struct atm_dev *dev)
         if (!(skb = atm_alloc_charge(vcc, len, GFP_ATOMIC))) {
            if (vcc->vci < 32)
               printk("Drop control packets\n");
-	      goto out_free_desc;
+	   goto out_free_desc;
         }
 	skb_put(skb,len);  
         // pwang_test

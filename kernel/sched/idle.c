@@ -4,6 +4,7 @@
 #include <linux/sched.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
+#include <linux/cpuhotplug.h>
 #include <linux/tick.h>
 #include <linux/mm.h>
 #include <linux/stackprotector.h>
@@ -57,9 +58,11 @@ static inline int cpu_idle_poll(void)
 	rcu_idle_enter();
 	trace_cpu_idle_rcuidle(0, smp_processor_id());
 	local_irq_enable();
+	stop_critical_timings();
 	while (!tif_need_resched() &&
 		(cpu_idle_force_poll || tick_check_broadcast_expired()))
 		cpu_relax();
+	start_critical_timings();
 	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
 	rcu_idle_exit();
 	return 1;
@@ -95,12 +98,6 @@ void default_idle_call(void)
 static int call_cpuidle(struct cpuidle_driver *drv, struct cpuidle_device *dev,
 		      int next_state)
 {
-	/* Fall back to the default arch idle method on errors. */
-	if (next_state < 0) {
-		default_idle_call();
-		return next_state;
-	}
-
 	/*
 	 * The idle task must be scheduled, it is pointless to go to idle, just
 	 * update no idle residency and return.
@@ -130,7 +127,7 @@ static int call_cpuidle(struct cpuidle_driver *drv, struct cpuidle_device *dev,
  */
 static void cpuidle_idle_call(void)
 {
-	struct cpuidle_device *dev = __this_cpu_read(cpuidle_devices);
+	struct cpuidle_device *dev = cpuidle_get_device();
 	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
 	int next_state, entered_state;
 
@@ -166,7 +163,7 @@ static void cpuidle_idle_call(void)
 	 */
 	if (idle_should_freeze()) {
 		entered_state = cpuidle_enter_freeze(drv, dev);
-		if (entered_state >= 0) {
+		if (entered_state > 0) {
 			local_irq_enable();
 			goto exit_idle;
 		}
@@ -197,8 +194,6 @@ exit_idle:
 	rcu_idle_exit();
 }
 
-DEFINE_PER_CPU(bool, cpu_dead_idle);
-
 /*
  * Generic idle loop implementation
  *
@@ -206,6 +201,8 @@ DEFINE_PER_CPU(bool, cpu_dead_idle);
  */
 static void cpu_idle_loop(void)
 {
+	int cpu = smp_processor_id();
+
 	while (1) {
 		/*
 		 * If the arch has a polling bit, we maintain an invariant:
@@ -217,17 +214,15 @@ static void cpu_idle_loop(void)
 		 */
 
 		__current_set_polling();
+		quiet_vmstat();
 		tick_nohz_idle_enter();
 
 		while (!need_resched()) {
 			check_pgt_cache();
 			rmb();
 
-			if (cpu_is_offline(smp_processor_id())) {
-				rcu_cpu_notify(NULL, CPU_DYING_IDLE,
-					       (void *)(long)smp_processor_id());
-				smp_mb(); /* all activity before dead. */
-				this_cpu_write(cpu_dead_idle, true);
+			if (cpu_is_offline(cpu)) {
+				cpuhp_report_idle_dead();
 				arch_cpu_idle_dead();
 			}
 
@@ -294,5 +289,6 @@ void cpu_startup_entry(enum cpuhp_state state)
 	boot_init_stack_canary();
 #endif
 	arch_cpu_idle_prepare();
+	cpuhp_online_idle(state);
 	cpu_idle_loop();
 }

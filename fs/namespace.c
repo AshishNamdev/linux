@@ -1562,6 +1562,7 @@ void __detach_mounts(struct dentry *dentry)
 		goto out_unlock;
 
 	lock_mount_hash();
+	event++;
 	while (!hlist_empty(&mp->m_list)) {
 		mnt = hlist_entry(mp->m_list.first, struct mount, mnt_mp_list);
 		if (mnt->mnt.mnt_flags & MNT_UMOUNT) {
@@ -1582,6 +1583,14 @@ out_unlock:
 static inline bool may_mount(void)
 {
 	return ns_capable(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN);
+}
+
+static inline bool may_mandlock(void)
+{
+#ifndef	CONFIG_MANDATORY_FILE_LOCKING
+	return false;
+#endif
+	return capable(CAP_SYS_ADMIN);
 }
 
 /*
@@ -1953,9 +1962,9 @@ static struct mountpoint *lock_mount(struct path *path)
 	struct vfsmount *mnt;
 	struct dentry *dentry = path->dentry;
 retry:
-	mutex_lock(&dentry->d_inode->i_mutex);
+	inode_lock(dentry->d_inode);
 	if (unlikely(cant_mount(dentry))) {
-		mutex_unlock(&dentry->d_inode->i_mutex);
+		inode_unlock(dentry->d_inode);
 		return ERR_PTR(-ENOENT);
 	}
 	namespace_lock();
@@ -1966,13 +1975,13 @@ retry:
 			mp = new_mountpoint(dentry);
 		if (IS_ERR(mp)) {
 			namespace_unlock();
-			mutex_unlock(&dentry->d_inode->i_mutex);
+			inode_unlock(dentry->d_inode);
 			return mp;
 		}
 		return mp;
 	}
 	namespace_unlock();
-	mutex_unlock(&path->dentry->d_inode->i_mutex);
+	inode_unlock(path->dentry->d_inode);
 	path_put(path);
 	path->mnt = mnt;
 	dentry = path->dentry = dget(mnt->mnt_root);
@@ -1984,7 +1993,7 @@ static void unlock_mount(struct mountpoint *where)
 	struct dentry *dentry = where->m_dentry;
 	put_mountpoint(where);
 	namespace_unlock();
-	mutex_unlock(&dentry->d_inode->i_mutex);
+	inode_unlock(dentry->d_inode);
 }
 
 static int graft_tree(struct mount *mnt, struct mount *p, struct mountpoint *mp)
@@ -2177,13 +2186,7 @@ static int do_remount(struct path *path, int flags, int mnt_flags,
 	}
 	if ((mnt->mnt.mnt_flags & MNT_LOCK_NODEV) &&
 	    !(mnt_flags & MNT_NODEV)) {
-		/* Was the nodev implicitly added in mount? */
-		if ((mnt->mnt_ns->user_ns != &init_user_ns) &&
-		    !(sb->s_type->fs_flags & FS_USERNS_DEV_MOUNT)) {
-			mnt_flags |= MNT_NODEV;
-		} else {
-			return -EPERM;
-		}
+		return -EPERM;
 	}
 	if ((mnt->mnt.mnt_flags & MNT_LOCK_NOSUID) &&
 	    !(mnt_flags & MNT_NOSUID)) {
@@ -2367,7 +2370,7 @@ unlock:
 	return err;
 }
 
-static bool fs_fully_visible(struct file_system_type *fs_type, int *new_mnt_flags);
+static bool mount_too_revealing(struct vfsmount *mnt, int *new_mnt_flags);
 
 /*
  * create a new mount for userspace and request it to be added into the
@@ -2377,7 +2380,6 @@ static int do_new_mount(struct path *path, const char *fstype, int flags,
 			int mnt_flags, const char *name, void *data)
 {
 	struct file_system_type *type;
-	struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
 	struct vfsmount *mnt;
 	int err;
 
@@ -2388,24 +2390,6 @@ static int do_new_mount(struct path *path, const char *fstype, int flags,
 	if (!type)
 		return -ENODEV;
 
-	if (user_ns != &init_user_ns) {
-		if (!(type->fs_flags & FS_USERNS_MOUNT)) {
-			put_filesystem(type);
-			return -EPERM;
-		}
-		/* Only in special cases allow devices from mounts
-		 * created outside the initial user namespace.
-		 */
-		if (!(type->fs_flags & FS_USERNS_DEV_MOUNT)) {
-			flags |= MS_NODEV;
-			mnt_flags |= MNT_NODEV | MNT_LOCK_NODEV;
-		}
-		if (type->fs_flags & FS_USERNS_VISIBLE) {
-			if (!fs_fully_visible(type, &mnt_flags))
-				return -EPERM;
-		}
-	}
-
 	mnt = vfs_kern_mount(type, flags, name, data);
 	if (!IS_ERR(mnt) && (type->fs_flags & FS_HAS_SUBTYPE) &&
 	    !mnt->mnt_sb->s_subtype)
@@ -2414,6 +2398,11 @@ static int do_new_mount(struct path *path, const char *fstype, int flags,
 	put_filesystem(type);
 	if (IS_ERR(mnt))
 		return PTR_ERR(mnt);
+
+	if (mount_too_revealing(mnt, &mnt_flags)) {
+		mntput(mnt);
+		return -EPERM;
+	}
 
 	err = do_add_mount(real_mount(mnt), path, mnt_flags);
 	if (err)
@@ -2601,18 +2590,18 @@ static long exact_copy_from_user(void *to, const void __user * from,
 	return n;
 }
 
-int copy_mount_options(const void __user * data, unsigned long *where)
+void *copy_mount_options(const void __user * data)
 {
 	int i;
-	unsigned long page;
 	unsigned long size;
+	char *copy;
 
-	*where = 0;
 	if (!data)
-		return 0;
+		return NULL;
 
-	if (!(page = __get_free_page(GFP_KERNEL)))
-		return -ENOMEM;
+	copy = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!copy)
+		return ERR_PTR(-ENOMEM);
 
 	/* We only care that *some* data at the address the user
 	 * gave us is valid.  Just in case, we'll zero
@@ -2623,15 +2612,14 @@ int copy_mount_options(const void __user * data, unsigned long *where)
 	if (size > PAGE_SIZE)
 		size = PAGE_SIZE;
 
-	i = size - exact_copy_from_user((void *)page, data, size);
+	i = size - exact_copy_from_user(copy, data, size);
 	if (!i) {
-		free_page(page);
-		return -EFAULT;
+		kfree(copy);
+		return ERR_PTR(-EFAULT);
 	}
 	if (i != PAGE_SIZE)
-		memset((char *)page + i, 0, PAGE_SIZE - i);
-	*where = page;
-	return 0;
+		memset(copy + i, 0, PAGE_SIZE - i);
+	return copy;
 }
 
 char *copy_mount_string(const void __user *data)
@@ -2676,6 +2664,8 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	retval = security_sb_mount(dev_name, &path,
 				   type_page, flags, data_page);
 	if (!retval && !may_mount())
+		retval = -EPERM;
+	if (!retval && (flags & MS_MANDLOCK) && !may_mandlock())
 		retval = -EPERM;
 	if (retval)
 		goto dput_out;
@@ -2896,7 +2886,7 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 	int ret;
 	char *kernel_type;
 	char *kernel_dev;
-	unsigned long data_page;
+	void *options;
 
 	kernel_type = copy_mount_string(type);
 	ret = PTR_ERR(kernel_type);
@@ -2908,14 +2898,14 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 	if (IS_ERR(kernel_dev))
 		goto out_dev;
 
-	ret = copy_mount_options(data, &data_page);
-	if (ret < 0)
+	options = copy_mount_options(data);
+	ret = PTR_ERR(options);
+	if (IS_ERR(options))
 		goto out_data;
 
-	ret = do_mount(kernel_dev, dir_name, kernel_type, flags,
-		(void *) data_page);
+	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
-	free_page(data_page);
+	kfree(options);
 out_data:
 	kfree(kernel_dev);
 out_dev:
@@ -2939,9 +2929,9 @@ bool is_path_reachable(struct mount *mnt, struct dentry *dentry,
 	return &mnt->mnt == root->mnt && is_subdir(dentry, root->dentry);
 }
 
-int path_is_under(struct path *path1, struct path *path2)
+bool path_is_under(struct path *path1, struct path *path2)
 {
-	int res;
+	bool res;
 	read_seqlock_excl(&mount_lock);
 	res = is_path_reachable(real_mount(path1->mnt), path1->dentry, path2);
 	read_sequnlock_excl(&mount_lock);
@@ -3205,22 +3195,19 @@ bool current_chrooted(void)
 	return chrooted;
 }
 
-static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
+static bool mnt_already_visible(struct mnt_namespace *ns, struct vfsmount *new,
+				int *new_mnt_flags)
 {
-	struct mnt_namespace *ns = current->nsproxy->mnt_ns;
 	int new_flags = *new_mnt_flags;
 	struct mount *mnt;
 	bool visible = false;
-
-	if (unlikely(!ns))
-		return false;
 
 	down_read(&namespace_sem);
 	list_for_each_entry(mnt, &ns->list, mnt_list) {
 		struct mount *child;
 		int mnt_flags;
 
-		if (mnt->mnt.mnt_sb->s_type != type)
+		if (mnt->mnt.mnt_sb->s_type != new->mnt_sb->s_type)
 			continue;
 
 		/* This mount is not fully visible if it's root directory
@@ -3229,27 +3216,18 @@ static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
 		if (mnt->mnt.mnt_root != mnt->mnt.mnt_sb->s_root)
 			continue;
 
-		/* Read the mount flags and filter out flags that
-		 * may safely be ignored.
-		 */
+		/* A local view of the mount flags */
 		mnt_flags = mnt->mnt.mnt_flags;
-		if (mnt->mnt.mnt_sb->s_iflags & SB_I_NOEXEC)
-			mnt_flags &= ~(MNT_LOCK_NOSUID | MNT_LOCK_NOEXEC);
+
+		/* Don't miss readonly hidden in the superblock flags */
+		if (mnt->mnt.mnt_sb->s_flags & MS_RDONLY)
+			mnt_flags |= MNT_LOCK_READONLY;
 
 		/* Verify the mount flags are equal to or more permissive
 		 * than the proposed new mount.
 		 */
 		if ((mnt_flags & MNT_LOCK_READONLY) &&
 		    !(new_flags & MNT_READONLY))
-			continue;
-		if ((mnt_flags & MNT_LOCK_NODEV) &&
-		    !(new_flags & MNT_NODEV))
-			continue;
-		if ((mnt_flags & MNT_LOCK_NOSUID) &&
-		    !(new_flags & MNT_NOSUID))
-			continue;
-		if ((mnt_flags & MNT_LOCK_NOEXEC) &&
-		    !(new_flags & MNT_NOEXEC))
 			continue;
 		if ((mnt_flags & MNT_LOCK_ATIME) &&
 		    ((mnt_flags & MNT_ATIME_MASK) != (new_flags & MNT_ATIME_MASK)))
@@ -3262,7 +3240,7 @@ static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
 		list_for_each_entry(child, &mnt->mnt_mounts, mnt_child) {
 			struct inode *inode = child->mnt_mountpoint->d_inode;
 			/* Only worry about locked mounts */
-			if (!(mnt_flags & MNT_LOCKED))
+			if (!(child->mnt.mnt_flags & MNT_LOCKED))
 				continue;
 			/* Is the directory permanetly empty? */
 			if (!is_empty_dir_inode(inode))
@@ -3270,9 +3248,6 @@ static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
 		}
 		/* Preserve the locked attributes */
 		*new_mnt_flags |= mnt_flags & (MNT_LOCK_READONLY | \
-					       MNT_LOCK_NODEV    | \
-					       MNT_LOCK_NOSUID   | \
-					       MNT_LOCK_NOEXEC   | \
 					       MNT_LOCK_ATIME);
 		visible = true;
 		goto found;
@@ -3281,6 +3256,42 @@ static bool fs_fully_visible(struct file_system_type *type, int *new_mnt_flags)
 found:
 	up_read(&namespace_sem);
 	return visible;
+}
+
+static bool mount_too_revealing(struct vfsmount *mnt, int *new_mnt_flags)
+{
+	const unsigned long required_iflags = SB_I_NOEXEC | SB_I_NODEV;
+	struct mnt_namespace *ns = current->nsproxy->mnt_ns;
+	unsigned long s_iflags;
+
+	if (ns->user_ns == &init_user_ns)
+		return false;
+
+	/* Can this filesystem be too revealing? */
+	s_iflags = mnt->mnt_sb->s_iflags;
+	if (!(s_iflags & SB_I_USERNS_VISIBLE))
+		return false;
+
+	if ((s_iflags & required_iflags) != required_iflags) {
+		WARN_ONCE(1, "Expected s_iflags to contain 0x%lx\n",
+			  required_iflags);
+		return true;
+	}
+
+	return !mnt_already_visible(ns, mnt, new_mnt_flags);
+}
+
+bool mnt_may_suid(struct vfsmount *mnt)
+{
+	/*
+	 * Foreign mounts (accessed via fchdir or through /proc
+	 * symlinks) are always treated as if they are nosuid.  This
+	 * prevents namespaces from trusting potentially unsafe
+	 * suid/sgid bits, file caps, or security labels that originate
+	 * in other namespaces.
+	 */
+	return !(mnt->mnt_flags & MNT_NOSUID) && check_mnt(real_mount(mnt)) &&
+	       current_in_userns(mnt->mnt_sb->s_user_ns);
 }
 
 static struct ns_common *mntns_get(struct task_struct *task)

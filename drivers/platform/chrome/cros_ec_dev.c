@@ -32,6 +32,7 @@ static int ec_major;
 static const struct attribute_group *cros_ec_groups[] = {
 	&cros_ec_attr_group,
 	&cros_ec_lightbar_attr_group,
+	&cros_ec_vbc_attr_group,
 	NULL,
 };
 
@@ -136,6 +137,10 @@ static long ec_device_ioctl_xcmd(struct cros_ec_dev *ec, void __user *arg)
 	if (copy_from_user(&u_cmd, arg, sizeof(u_cmd)))
 		return -EFAULT;
 
+	if ((u_cmd.outsize > EC_MAX_MSG_BYTES) ||
+	    (u_cmd.insize > EC_MAX_MSG_BYTES))
+		return -EINVAL;
+
 	s_cmd = kmalloc(sizeof(*s_cmd) + max(u_cmd.outsize, u_cmd.insize),
 			GFP_KERNEL);
 	if (!s_cmd)
@@ -146,13 +151,19 @@ static long ec_device_ioctl_xcmd(struct cros_ec_dev *ec, void __user *arg)
 		goto exit;
 	}
 
+	if (u_cmd.outsize != s_cmd->outsize ||
+	    u_cmd.insize != s_cmd->insize) {
+		ret = -EINVAL;
+		goto exit;
+	}
+
 	s_cmd->command += ec->cmd_offset;
 	ret = cros_ec_cmd_xfer(ec->ec_dev, s_cmd);
 	/* Only copy data to userland if data was received. */
 	if (ret < 0)
 		goto exit;
 
-	if (copy_to_user(arg, s_cmd, sizeof(*s_cmd) + u_cmd.insize))
+	if (copy_to_user(arg, s_cmd, sizeof(*s_cmd) + s_cmd->insize))
 		ret = -EFAULT;
 exit:
 	kfree(s_cmd);
@@ -207,6 +218,9 @@ static const struct file_operations fops = {
 	.release = ec_device_release,
 	.read = ec_device_read,
 	.unlocked_ioctl = ec_device_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = ec_device_ioctl,
+#endif
 };
 
 static void __remove(struct device *dev)
@@ -286,6 +300,12 @@ static int ec_device_remove(struct platform_device *pdev)
 	device_unregister(&ec->class_dev);
 	return 0;
 }
+
+static const struct platform_device_id cros_ec_id[] = {
+	{ "cros-ec-ctl", 0 },
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(platform, cros_ec_id);
 
 static struct platform_driver cros_ec_dev_driver = {
 	.driver = {

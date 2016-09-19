@@ -35,6 +35,9 @@
 const char *pm_labels[] = { "mem", "standby", "freeze", NULL };
 const char *pm_states[PM_SUSPEND_MAX];
 
+unsigned int pm_suspend_global_flags;
+EXPORT_SYMBOL_GPL(pm_suspend_global_flags);
+
 static const struct platform_suspend_ops *suspend_ops;
 static const struct platform_freeze_ops *freeze_ops;
 static DECLARE_WAIT_QUEUE_HEAD(suspend_freeze_wait_head);
@@ -245,7 +248,7 @@ static int suspend_test(int level)
 {
 #ifdef CONFIG_PM_DEBUG
 	if (pm_test_level == level) {
-		printk(KERN_INFO "suspend debug: Waiting for %d second(s).\n",
+		pr_info("suspend debug: Waiting for %d second(s).\n",
 				pm_test_delay);
 		mdelay(pm_test_delay * 1000);
 		return 1;
@@ -263,16 +266,18 @@ static int suspend_test(int level)
  */
 static int suspend_prepare(suspend_state_t state)
 {
-	int error;
+	int error, nr_calls = 0;
 
 	if (!sleep_state_supported(state))
 		return -EPERM;
 
 	pm_prepare_console();
 
-	error = pm_notifier_call_chain(PM_SUSPEND_PREPARE);
-	if (error)
+	error = __pm_notifier_call_chain(PM_SUSPEND_PREPARE, -1, &nr_calls);
+	if (error) {
+		nr_calls--;
 		goto Finish;
+	}
 
 	trace_suspend_resume(TPS("freeze_processes"), 0, true);
 	error = suspend_freeze_processes();
@@ -283,7 +288,7 @@ static int suspend_prepare(suspend_state_t state)
 	suspend_stats.failed_freeze++;
 	dpm_save_failed_step(SUSPEND_FREEZE);
  Finish:
-	pm_notifier_call_chain(PM_POST_SUSPEND);
+	__pm_notifier_call_chain(PM_POST_SUSPEND, nr_calls, NULL);
 	pm_restore_console();
 	return error;
 }
@@ -317,7 +322,7 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 
 	error = dpm_suspend_late(PMSG_SUSPEND);
 	if (error) {
-		printk(KERN_ERR "PM: late suspend of devices failed\n");
+		pr_err("PM: late suspend of devices failed\n");
 		goto Platform_finish;
 	}
 	error = platform_suspend_prepare_late(state);
@@ -326,7 +331,7 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 
 	error = dpm_suspend_noirq(PMSG_SUSPEND);
 	if (error) {
-		printk(KERN_ERR "PM: noirq suspend of devices failed\n");
+		pr_err("PM: noirq suspend of devices failed\n");
 		goto Platform_early_resume;
 	}
 	error = platform_suspend_prepare_noirq(state);
@@ -470,8 +475,7 @@ static int enter_state(suspend_state_t state)
 	if (state == PM_SUSPEND_FREEZE) {
 #ifdef CONFIG_PM_DEBUG
 		if (pm_test_level != TEST_NONE && pm_test_level <= TEST_CPUS) {
-			pr_warning("PM: Unsupported test mode for suspend to idle,"
-				   "please choose none/freezer/devices/platform.\n");
+			pr_warn("PM: Unsupported test mode for suspend to idle, please choose none/freezer/devices/platform.\n");
 			return -EAGAIN;
 		}
 #endif
@@ -493,6 +497,7 @@ static int enter_state(suspend_state_t state)
 #endif
 
 	pr_debug("PM: Preparing system for sleep (%s)\n", pm_states[state]);
+	pm_suspend_clear_flags();
 	error = suspend_prepare(state);
 	if (error)
 		goto Unlock;

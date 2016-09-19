@@ -32,8 +32,8 @@
  */
 
 #define ATOMIC_INIT(i)		{ (i) }
-#define atomic_read(v)		ACCESS_ONCE((v)->counter)
-#define atomic_set(v, i)	(((v)->counter) = (i))
+#define atomic_read(v)		READ_ONCE((v)->counter)
+#define atomic_set(v, i)	WRITE_ONCE(((v)->counter), (i))
 
 static inline int atomic_inc_return(atomic_t *v)
 {
@@ -58,16 +58,6 @@ static inline int atomic_sub_return(int i, atomic_t *v)
 static inline int atomic_add_negative(int i, atomic_t *v)
 {
 	return atomic_add_return(i, v) < 0;
-}
-
-static inline void atomic_add(int i, atomic_t *v)
-{
-	atomic_add_return(i, v);
-}
-
-static inline void atomic_sub(int i, atomic_t *v)
-{
-	atomic_sub_return(i, v);
 }
 
 static inline void atomic_inc(atomic_t *v)
@@ -136,16 +126,6 @@ static inline long long atomic64_add_negative(long long i, atomic64_t *v)
 	return atomic64_add_return(i, v) < 0;
 }
 
-static inline void atomic64_add(long long i, atomic64_t *v)
-{
-	atomic64_add_return(i, v);
-}
-
-static inline void atomic64_sub(long long i, atomic64_t *v)
-{
-	atomic64_sub_return(i, v);
-}
-
 static inline void atomic64_inc(atomic64_t *v)
 {
 	atomic64_inc_return(v);
@@ -182,11 +162,19 @@ static __inline__ int __atomic_add_unless(atomic_t *v, int a, int u)
 }
 
 #define ATOMIC_OP(op)							\
+static inline int atomic_fetch_##op(int i, atomic_t *v)			\
+{									\
+	return __atomic32_fetch_##op(i, &v->counter);			\
+}									\
 static inline void atomic_##op(int i, atomic_t *v)			\
 {									\
 	(void)__atomic32_fetch_##op(i, &v->counter);			\
 }									\
 									\
+static inline long long atomic64_fetch_##op(long long i, atomic64_t *v)	\
+{									\
+	return __atomic64_fetch_##op(i, &v->counter);			\
+}									\
 static inline void atomic64_##op(long long i, atomic64_t *v)		\
 {									\
 	(void)__atomic64_fetch_##op(i, &v->counter);			\
@@ -195,6 +183,8 @@ static inline void atomic64_##op(long long i, atomic64_t *v)		\
 ATOMIC_OP(or)
 ATOMIC_OP(and)
 ATOMIC_OP(xor)
+ATOMIC_OP(add)
+ATOMIC_OP(sub)
 
 #undef ATOMIC_OP
 

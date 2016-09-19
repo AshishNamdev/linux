@@ -413,7 +413,7 @@ void smk_insert_entry(struct smack_known *skp)
 	unsigned int hash;
 	struct hlist_head *head;
 
-	hash = full_name_hash(skp->smk_known, strlen(skp->smk_known));
+	hash = full_name_hash(NULL, skp->smk_known, strlen(skp->smk_known));
 	head = &smack_known_hash[hash & (SMACK_HASH_SLOTS - 1)];
 
 	hlist_add_head_rcu(&skp->smk_hashed, head);
@@ -433,7 +433,7 @@ struct smack_known *smk_find_entry(const char *string)
 	struct hlist_head *head;
 	struct smack_known *skp;
 
-	hash = full_name_hash(string, strlen(string));
+	hash = full_name_hash(NULL, string, strlen(string));
 	head = &smack_known_hash[hash & (SMACK_HASH_SLOTS - 1)];
 
 	hlist_for_each_entry_rcu(skp, head, smk_hashed)
@@ -637,7 +637,7 @@ DEFINE_MUTEX(smack_onlycap_lock);
 int smack_privileged(int cap)
 {
 	struct smack_known *skp = smk_of_current();
-	struct smack_onlycap *sop;
+	struct smack_known_list_elem *sklep;
 
 	/*
 	 * All kernel tasks are privileged
@@ -654,8 +654,8 @@ int smack_privileged(int cap)
 		return 1;
 	}
 
-	list_for_each_entry_rcu(sop, &smack_onlycap_list, list) {
-		if (sop->smk_label == skp) {
+	list_for_each_entry_rcu(sklep, &smack_onlycap_list, list) {
+		if (sklep->smk_label == skp) {
 			rcu_read_unlock();
 			return 1;
 		}

@@ -1,6 +1,8 @@
 # List of files in the vdso, has to be asm only for now
 
-obj-vdso64 = gettimeofday.o clock_getres.o clock_gettime.o note.o
+KCOV_INSTRUMENT := n
+
+obj-vdso64 = gettimeofday.o clock_getres.o clock_gettime.o note.o getcpu.o
 
 # Build rules
 

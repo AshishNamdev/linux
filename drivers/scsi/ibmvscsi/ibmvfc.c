@@ -2636,7 +2636,8 @@ static void ibmvfc_handle_async(struct ibmvfc_async_crq *crq,
 	struct ibmvfc_target *tgt;
 
 	ibmvfc_log(vhost, desc->log_level, "%s event received. scsi_id: %llx, wwpn: %llx,"
-		   " node_name: %llx%s\n", desc->desc, crq->scsi_id, crq->wwpn, crq->node_name,
+		   " node_name: %llx%s\n", desc->desc, be64_to_cpu(crq->scsi_id),
+		   be64_to_cpu(crq->wwpn), be64_to_cpu(crq->node_name),
 		   ibmvfc_get_link_state(crq->link_state));
 
 	switch (be64_to_cpu(crq->event)) {
@@ -3095,7 +3096,6 @@ static struct scsi_host_template driver_template = {
 	.max_sectors = IBMVFC_MAX_SECTORS,
 	.use_clustering = ENABLE_CLUSTERING,
 	.shost_attrs = ibmvfc_attrs,
-	.use_blk_tags = 1,
 	.track_queue_depth = 1,
 };
 
@@ -4722,6 +4722,8 @@ static void ibmvfc_rport_add_thread(struct work_struct *work)
 					tgt_dbg(tgt, "Setting rport roles\n");
 					fc_remote_port_rolechg(rport, tgt->ids.roles);
 					put_device(&rport->dev);
+				} else {
+					spin_unlock_irqrestore(vhost->host->host_lock, flags);
 				}
 
 				kref_put(&tgt->kref, ibmvfc_release_tgt);

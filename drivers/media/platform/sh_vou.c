@@ -22,11 +22,12 @@
 #include <linux/videodev2.h>
 #include <linux/module.h>
 
-#include <media/sh_vou.h>
+#include <media/drv-intf/sh_vou.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mediabus.h>
+#include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-contig.h>
 
 /* Mirror addresses are not available for all registers */
@@ -62,11 +63,12 @@ enum sh_vou_status {
 #define VOU_MIN_IMAGE_HEIGHT	16
 
 struct sh_vou_buffer {
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head list;
 };
 
-static inline struct sh_vou_buffer *to_sh_vou_buffer(struct vb2_buffer *vb2)
+static inline struct
+sh_vou_buffer *to_sh_vou_buffer(struct vb2_v4l2_buffer *vb2)
 {
 	return container_of(vb2, struct sh_vou_buffer, vb);
 }
@@ -84,7 +86,6 @@ struct sh_vou_device {
 	v4l2_std_id std;
 	int pix_idx;
 	struct vb2_queue queue;
-	struct vb2_alloc_ctx *alloc_ctx;
 	struct sh_vou_buffer *active;
 	enum sh_vou_status status;
 	unsigned sequence;
@@ -193,11 +194,11 @@ static struct sh_vou_fmt vou_fmt[] = {
 };
 
 static void sh_vou_schedule_next(struct sh_vou_device *vou_dev,
-				 struct vb2_buffer *vb)
+				 struct vb2_v4l2_buffer *vbuf)
 {
 	dma_addr_t addr1, addr2;
 
-	addr1 = vb2_dma_contig_plane_dma_addr(vb, 0);
+	addr1 = vb2_dma_contig_plane_dma_addr(&vbuf->vb2_buf, 0);
 	switch (vou_dev->pix.pixelformat) {
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV16:
@@ -241,9 +242,9 @@ static void sh_vou_stream_config(struct sh_vou_device *vou_dev)
 }
 
 /* Locking: caller holds fop_lock mutex */
-static int sh_vou_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+static int sh_vou_queue_setup(struct vb2_queue *vq,
 		       unsigned int *nbuffers, unsigned int *nplanes,
-		       unsigned int sizes[], void *alloc_ctxs[])
+		       unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct sh_vou_device *vou_dev = vb2_get_drv_priv(vq);
 	struct v4l2_pix_format *pix = &vou_dev->pix;
@@ -251,11 +252,10 @@ static int sh_vou_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fm
 
 	dev_dbg(vou_dev->v4l2_dev.dev, "%s()\n", __func__);
 
-	if (fmt && fmt->fmt.pix.sizeimage < pix->height * bytes_per_line)
-		return -EINVAL;
+	if (*nplanes)
+		return sizes[0] < pix->height * bytes_per_line ? -EINVAL : 0;
 	*nplanes = 1;
-	sizes[0] = fmt ? fmt->fmt.pix.sizeimage : pix->height * bytes_per_line;
-	alloc_ctxs[0] = vou_dev->alloc_ctx;
+	sizes[0] = pix->height * bytes_per_line;
 	return 0;
 }
 
@@ -282,8 +282,9 @@ static int sh_vou_buf_prepare(struct vb2_buffer *vb)
 /* Locking: caller holds fop_lock mutex and vq->irqlock spinlock */
 static void sh_vou_buf_queue(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct sh_vou_device *vou_dev = vb2_get_drv_priv(vb->vb2_queue);
-	struct sh_vou_buffer *shbuf = to_sh_vou_buffer(vb);
+	struct sh_vou_buffer *shbuf = to_sh_vou_buffer(vbuf);
 	unsigned long flags;
 
 	spin_lock_irqsave(&vou_dev->lock, flags);
@@ -302,7 +303,8 @@ static int sh_vou_start_streaming(struct vb2_queue *vq, unsigned int count)
 					 video, s_stream, 1);
 	if (ret < 0 && ret != -ENOIOCTLCMD) {
 		list_for_each_entry_safe(buf, node, &vou_dev->buf_list, list) {
-			vb2_buffer_done(&buf->vb, VB2_BUF_STATE_QUEUED);
+			vb2_buffer_done(&buf->vb.vb2_buf,
+					VB2_BUF_STATE_QUEUED);
 			list_del(&buf->list);
 		}
 		vou_dev->active = NULL;
@@ -353,7 +355,7 @@ static void sh_vou_stop_streaming(struct vb2_queue *vq)
 	msleep(50);
 	spin_lock_irqsave(&vou_dev->lock, flags);
 	list_for_each_entry_safe(buf, node, &vou_dev->buf_list, list) {
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 		list_del(&buf->list);
 	}
 	vou_dev->active = NULL;
@@ -1066,10 +1068,10 @@ static irqreturn_t sh_vou_isr(int irq, void *dev_id)
 
 	list_del(&vb->list);
 
-	v4l2_get_timestamp(&vb->vb.v4l2_buf.timestamp);
-	vb->vb.v4l2_buf.sequence = vou_dev->sequence++;
-	vb->vb.v4l2_buf.field = V4L2_FIELD_INTERLACED;
-	vb2_buffer_done(&vb->vb, VB2_BUF_STATE_DONE);
+	vb->vb.vb2_buf.timestamp = ktime_get_ns();
+	vb->vb.sequence = vou_dev->sequence++;
+	vb->vb.field = V4L2_FIELD_INTERLACED;
+	vb2_buffer_done(&vb->vb.vb2_buf, VB2_BUF_STATE_DONE);
 
 	vou_dev->active = list_entry(vou_dev->buf_list.next,
 				     struct sh_vou_buffer, list);
@@ -1300,16 +1302,11 @@ static int sh_vou_probe(struct platform_device *pdev)
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->min_buffers_needed = 2;
 	q->lock = &vou_dev->fop_lock;
+	q->dev = &pdev->dev;
 	ret = vb2_queue_init(q);
 	if (ret)
-		goto einitctx;
+		goto ei2cgadap;
 
-	vou_dev->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
-	if (IS_ERR(vou_dev->alloc_ctx)) {
-		dev_err(&pdev->dev, "Can't allocate buffer context");
-		ret = PTR_ERR(vou_dev->alloc_ctx);
-		goto einitctx;
-	}
 	vdev->queue = q;
 	INIT_LIST_HEAD(&vou_dev->buf_list);
 
@@ -1344,8 +1341,6 @@ ei2cnd:
 ereset:
 	i2c_put_adapter(i2c_adap);
 ei2cgadap:
-	vb2_dma_contig_cleanup_ctx(vou_dev->alloc_ctx);
-einitctx:
 	pm_runtime_disable(&pdev->dev);
 	v4l2_device_unregister(&vou_dev->v4l2_dev);
 	return ret;
@@ -1363,7 +1358,6 @@ static int sh_vou_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	video_unregister_device(&vou_dev->vdev);
 	i2c_put_adapter(client->adapter);
-	vb2_dma_contig_cleanup_ctx(vou_dev->alloc_ctx);
 	v4l2_device_unregister(&vou_dev->v4l2_dev);
 	return 0;
 }

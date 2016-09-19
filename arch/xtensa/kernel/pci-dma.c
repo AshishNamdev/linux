@@ -15,14 +15,15 @@
  * Joe Taylor <joe@tensilica.com, joetylr@yahoo.com>
  */
 
-#include <linux/types.h>
-#include <linux/mm.h>
-#include <linux/string.h>
-#include <linux/pci.h>
 #include <linux/gfp.h>
+#include <linux/highmem.h>
+#include <linux/mm.h>
 #include <linux/module.h>
-#include <asm/io.h>
+#include <linux/pci.h>
+#include <linux/string.h>
+#include <linux/types.h>
 #include <asm/cacheflush.h>
+#include <asm/io.h>
 
 void dma_cache_sync(struct device *dev, void *vaddr, size_t size,
 		    enum dma_data_direction dir)
@@ -47,17 +48,36 @@ void dma_cache_sync(struct device *dev, void *vaddr, size_t size,
 }
 EXPORT_SYMBOL(dma_cache_sync);
 
+static void do_cache_op(dma_addr_t dma_handle, size_t size,
+			void (*fn)(unsigned long, unsigned long))
+{
+	unsigned long off = dma_handle & (PAGE_SIZE - 1);
+	unsigned long pfn = PFN_DOWN(dma_handle);
+	struct page *page = pfn_to_page(pfn);
+
+	if (!PageHighMem(page))
+		fn((unsigned long)bus_to_virt(dma_handle), size);
+	else
+		while (size > 0) {
+			size_t sz = min_t(size_t, size, PAGE_SIZE - off);
+			void *vaddr = kmap_atomic(page);
+
+			fn((unsigned long)vaddr + off, sz);
+			kunmap_atomic(vaddr);
+			off = 0;
+			++page;
+			size -= sz;
+		}
+}
+
 static void xtensa_sync_single_for_cpu(struct device *dev,
 				       dma_addr_t dma_handle, size_t size,
 				       enum dma_data_direction dir)
 {
-	void *vaddr;
-
 	switch (dir) {
 	case DMA_BIDIRECTIONAL:
 	case DMA_FROM_DEVICE:
-		vaddr = bus_to_virt(dma_handle);
-		__invalidate_dcache_range((unsigned long)vaddr, size);
+		do_cache_op(dma_handle, size, __invalidate_dcache_range);
 		break;
 
 	case DMA_NONE:
@@ -73,13 +93,11 @@ static void xtensa_sync_single_for_device(struct device *dev,
 					  dma_addr_t dma_handle, size_t size,
 					  enum dma_data_direction dir)
 {
-	void *vaddr;
-
 	switch (dir) {
 	case DMA_BIDIRECTIONAL:
 	case DMA_TO_DEVICE:
-		vaddr = bus_to_virt(dma_handle);
-		__flush_dcache_range((unsigned long)vaddr, size);
+		if (XCHAL_DCACHE_IS_WRITEBACK)
+			do_cache_op(dma_handle, size, __flush_dcache_range);
 		break;
 
 	case DMA_NONE:
@@ -124,7 +142,7 @@ static void xtensa_sync_sg_for_device(struct device *dev,
 
 static void *xtensa_dma_alloc(struct device *dev, size_t size,
 			      dma_addr_t *handle, gfp_t flag,
-			      struct dma_attrs *attrs)
+			      unsigned long attrs)
 {
 	unsigned long ret;
 	unsigned long uncached = 0;
@@ -153,7 +171,7 @@ static void *xtensa_dma_alloc(struct device *dev, size_t size,
 }
 
 static void xtensa_dma_free(struct device *hwdev, size_t size, void *vaddr,
-			    dma_addr_t dma_handle, struct dma_attrs *attrs)
+			    dma_addr_t dma_handle, unsigned long attrs)
 {
 	unsigned long addr = (unsigned long)vaddr +
 		XCHAL_KSEG_CACHED_VADDR - XCHAL_KSEG_BYPASS_VADDR;
@@ -167,25 +185,24 @@ static void xtensa_dma_free(struct device *hwdev, size_t size, void *vaddr,
 static dma_addr_t xtensa_map_page(struct device *dev, struct page *page,
 				  unsigned long offset, size_t size,
 				  enum dma_data_direction dir,
-				  struct dma_attrs *attrs)
+				  unsigned long attrs)
 {
 	dma_addr_t dma_handle = page_to_phys(page) + offset;
 
-	BUG_ON(PageHighMem(page));
 	xtensa_sync_single_for_device(dev, dma_handle, size, dir);
 	return dma_handle;
 }
 
 static void xtensa_unmap_page(struct device *dev, dma_addr_t dma_handle,
 			      size_t size, enum dma_data_direction dir,
-			      struct dma_attrs *attrs)
+			      unsigned long attrs)
 {
 	xtensa_sync_single_for_cpu(dev, dma_handle, size, dir);
 }
 
 static int xtensa_map_sg(struct device *dev, struct scatterlist *sg,
 			 int nents, enum dma_data_direction dir,
-			 struct dma_attrs *attrs)
+			 unsigned long attrs)
 {
 	struct scatterlist *s;
 	int i;
@@ -200,7 +217,7 @@ static int xtensa_map_sg(struct device *dev, struct scatterlist *sg,
 static void xtensa_unmap_sg(struct device *dev,
 			    struct scatterlist *sg, int nents,
 			    enum dma_data_direction dir,
-			    struct dma_attrs *attrs)
+			    unsigned long attrs)
 {
 	struct scatterlist *s;
 	int i;

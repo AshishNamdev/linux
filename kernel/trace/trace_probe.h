@@ -102,6 +102,7 @@ enum {
 	FETCH_MTD_reg = 0,
 	FETCH_MTD_stack,
 	FETCH_MTD_retval,
+	FETCH_MTD_comm,
 	FETCH_MTD_memory,
 	FETCH_MTD_symbol,
 	FETCH_MTD_deref,
@@ -183,6 +184,14 @@ DECLARE_BASIC_FETCH_FUNCS(bitfield);
 #define fetch_bitfield_string			NULL
 #define fetch_bitfield_string_size		NULL
 
+/* comm only makes sense as a string */
+#define fetch_comm_u8		NULL
+#define fetch_comm_u16		NULL
+#define fetch_comm_u32		NULL
+#define fetch_comm_u64		NULL
+DECLARE_FETCH_FUNC(comm, string);
+DECLARE_FETCH_FUNC(comm, string_size);
+
 /*
  * Define macro for basic types - we don't need to define s* types, because
  * we have to care only about bitwidth at recording time.
@@ -213,6 +222,7 @@ DEFINE_FETCH_##method(u64)
 ASSIGN_FETCH_FUNC(reg, ftype),				\
 ASSIGN_FETCH_FUNC(stack, ftype),			\
 ASSIGN_FETCH_FUNC(retval, ftype),			\
+ASSIGN_FETCH_FUNC(comm, ftype),				\
 ASSIGN_FETCH_FUNC(memory, ftype),			\
 ASSIGN_FETCH_FUNC(symbol, ftype),			\
 ASSIGN_FETCH_FUNC(deref, ftype),			\
@@ -302,15 +312,15 @@ static nokprobe_inline void call_fetch(struct fetch_param *fprm,
 }
 
 /* Check the name is good for event/group/fields */
-static inline int is_good_name(const char *name)
+static inline bool is_good_name(const char *name)
 {
 	if (!isalpha(*name) && *name != '_')
-		return 0;
+		return false;
 	while (*++name != '\0') {
 		if (!isalpha(*name) && !isdigit(*name) && *name != '_')
-			return 0;
+			return false;
 	}
-	return 1;
+	return true;
 }
 
 static inline struct event_file_link *

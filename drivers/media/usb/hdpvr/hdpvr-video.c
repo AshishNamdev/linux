@@ -316,7 +316,7 @@ static int hdpvr_start_streaming(struct hdpvr_device *dev)
 	dev->status = STATUS_STREAMING;
 
 	INIT_WORK(&dev->worker, hdpvr_transmit_buffers);
-	queue_work(dev->workqueue, &dev->worker);
+	schedule_work(&dev->worker);
 
 	v4l2_dbg(MSG_BUFFER, hdpvr_debug, &dev->v4l2_dev,
 			"streaming started\n");
@@ -350,7 +350,7 @@ static int hdpvr_stop_streaming(struct hdpvr_device *dev)
 	wake_up_interruptible(&dev->wait_buffer);
 	msleep(50);
 
-	flush_workqueue(dev->workqueue);
+	flush_work(&dev->worker);
 
 	mutex_lock(&dev->io_mutex);
 	/* kill the still outstanding urbs */
@@ -462,10 +462,8 @@ static ssize_t hdpvr_read(struct file *file, char __user *buffer, size_t count,
 			}
 
 			if (wait_event_interruptible(dev->wait_data,
-					      buf->status == BUFSTAT_READY)) {
-				ret = -ERESTARTSYS;
-				goto err;
-			}
+					      buf->status == BUFSTAT_READY))
+				return -ERESTARTSYS;
 		}
 
 		if (buf->status != BUFSTAT_READY)
@@ -642,7 +640,7 @@ static int vidioc_s_dv_timings(struct file *file, void *_fh,
 	if (dev->status != STATUS_IDLE)
 		return -EBUSY;
 	for (i = 0; i < ARRAY_SIZE(hdpvr_dv_timings); i++)
-		if (v4l2_match_dv_timings(timings, hdpvr_dv_timings + i, 0))
+		if (v4l2_match_dv_timings(timings, hdpvr_dv_timings + i, 0, false))
 			break;
 	if (i == ARRAY_SIZE(hdpvr_dv_timings))
 		return -EINVAL;
@@ -1125,7 +1123,7 @@ static void hdpvr_device_release(struct video_device *vdev)
 
 	hdpvr_delete(dev);
 	mutex_lock(&dev->io_mutex);
-	destroy_workqueue(dev->workqueue);
+	flush_work(&dev->worker);
 	mutex_unlock(&dev->io_mutex);
 
 	v4l2_device_unregister(&dev->v4l2_dev);

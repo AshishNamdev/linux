@@ -17,8 +17,11 @@
 #include <linux/uaccess.h>
 #include <linux/module.h>
 #include <linux/ctype.h>
+#include <linux/sort.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
+
+#include <trace/events/sched.h>
 
 #include <asm/setup.h>
 
@@ -38,21 +41,19 @@ static LIST_HEAD(ftrace_common_fields);
 static struct kmem_cache *field_cachep;
 static struct kmem_cache *file_cachep;
 
-#define SYSTEM_FL_FREE_NAME		(1 << 31)
-
 static inline int system_refcount(struct event_subsystem *system)
 {
-	return system->ref_count & ~SYSTEM_FL_FREE_NAME;
+	return system->ref_count;
 }
 
 static int system_refcount_inc(struct event_subsystem *system)
 {
-	return (system->ref_count++) & ~SYSTEM_FL_FREE_NAME;
+	return system->ref_count++;
 }
 
 static int system_refcount_dec(struct event_subsystem *system)
 {
-	return (--system->ref_count) & ~SYSTEM_FL_FREE_NAME;
+	return --system->ref_count;
 }
 
 /* Double loops, do not use break, only goto's work */
@@ -95,16 +96,16 @@ trace_find_event_field(struct trace_event_call *call, char *name)
 	struct ftrace_event_field *field;
 	struct list_head *head;
 
+	head = trace_get_fields(call);
+	field = __find_event_field(head, name);
+	if (field)
+		return field;
+
 	field = __find_event_field(&ftrace_generic_fields, name);
 	if (field)
 		return field;
 
-	field = __find_event_field(&ftrace_common_fields, name);
-	if (field)
-		return field;
-
-	head = trace_get_fields(call);
-	return __find_event_field(head, name);
+	return __find_event_field(&ftrace_common_fields, name);
 }
 
 static int __trace_define_field(struct list_head *head, const char *type,
@@ -169,8 +170,10 @@ static int trace_define_generic_fields(void)
 {
 	int ret;
 
-	__generic_field(int, cpu, FILTER_OTHER);
-	__generic_field(char *, comm, FILTER_PTR_STRING);
+	__generic_field(int, CPU, FILTER_CPU);
+	__generic_field(int, cpu, FILTER_CPU);
+	__generic_field(char *, COMM, FILTER_COMM);
+	__generic_field(char *, comm, FILTER_COMM);
 
 	return ret;
 }
@@ -200,6 +203,24 @@ static void trace_destroy_fields(struct trace_event_call *call)
 	}
 }
 
+/*
+ * run-time version of trace_event_get_offsets_<call>() that returns the last
+ * accessible offset of trace fields excluding __dynamic_array bytes
+ */
+int trace_event_get_offsets(struct trace_event_call *call)
+{
+	struct ftrace_event_field *tail;
+	struct list_head *head;
+
+	head = trace_get_fields(call);
+	/*
+	 * head->next points to the last field with the largest offset,
+	 * since it was added last by trace_define_field()
+	 */
+	tail = list_first_entry(head, struct ftrace_event_field, link);
+	return tail->offset + tail->size;
+}
+
 int trace_event_raw_init(struct trace_event_call *call)
 {
 	int id;
@@ -212,14 +233,42 @@ int trace_event_raw_init(struct trace_event_call *call)
 }
 EXPORT_SYMBOL_GPL(trace_event_raw_init);
 
+bool trace_event_ignore_this_pid(struct trace_event_file *trace_file)
+{
+	struct trace_array *tr = trace_file->tr;
+	struct trace_array_cpu *data;
+	struct trace_pid_list *pid_list;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+	if (!pid_list)
+		return false;
+
+	data = this_cpu_ptr(tr->trace_buffer.data);
+
+	return data->ignore_pid;
+}
+EXPORT_SYMBOL_GPL(trace_event_ignore_this_pid);
+
 void *trace_event_buffer_reserve(struct trace_event_buffer *fbuffer,
 				 struct trace_event_file *trace_file,
 				 unsigned long len)
 {
 	struct trace_event_call *event_call = trace_file->event_call;
 
+	if ((trace_file->flags & EVENT_FILE_FL_PID_FILTER) &&
+	    trace_event_ignore_this_pid(trace_file))
+		return NULL;
+
 	local_save_flags(fbuffer->flags);
 	fbuffer->pc = preempt_count();
+	/*
+	 * If CONFIG_PREEMPT is enabled, then the tracepoint itself disables
+	 * preemption (adding one to the preempt_count). Since we are
+	 * interested in the preempt_count at the time the tracepoint was
+	 * hit, we need to subtract one to offset the increment.
+	 */
+	if (IS_ENABLED(CONFIG_PREEMPT))
+		fbuffer->pc--;
 	fbuffer->trace_file = trace_file;
 
 	fbuffer->event =
@@ -338,6 +387,8 @@ static int __ftrace_event_enable_disable(struct trace_event_file *file,
 					 int enable, int soft_disable)
 {
 	struct trace_event_call *call = file->event_call;
+	struct trace_array *tr = file->tr;
+	unsigned long file_flags = file->flags;
 	int ret = 0;
 	int disable;
 
@@ -401,7 +452,7 @@ static int __ftrace_event_enable_disable(struct trace_event_file *file,
 			if (soft_disable)
 				set_bit(EVENT_FILE_FL_SOFT_DISABLED_BIT, &file->flags);
 
-			if (trace_flags & TRACE_ITER_RECORD_CMD) {
+			if (tr->trace_flags & TRACE_ITER_RECORD_CMD) {
 				tracing_start_cmdline_record();
 				set_bit(EVENT_FILE_FL_RECORDED_CMD_BIT, &file->flags);
 			}
@@ -418,6 +469,15 @@ static int __ftrace_event_enable_disable(struct trace_event_file *file,
 			call->flags |= TRACE_EVENT_FL_WAS_ENABLED;
 		}
 		break;
+	}
+
+	/* Enable or disable use of trace_buffered_event */
+	if ((file_flags & EVENT_FILE_FL_SOFT_DISABLED) !=
+	    (file->flags & EVENT_FILE_FL_SOFT_DISABLED)) {
+		if (file->flags & EVENT_FILE_FL_SOFT_DISABLED)
+			trace_buffered_event_enable();
+		else
+			trace_buffered_event_disable();
 	}
 
 	return ret;
@@ -446,6 +506,148 @@ static void ftrace_clear_events(struct trace_array *tr)
 	mutex_unlock(&event_mutex);
 }
 
+static void
+event_filter_pid_sched_process_exit(void *data, struct task_struct *task)
+{
+	struct trace_pid_list *pid_list;
+	struct trace_array *tr = data;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+	trace_filter_add_remove_task(pid_list, NULL, task);
+}
+
+static void
+event_filter_pid_sched_process_fork(void *data,
+				    struct task_struct *self,
+				    struct task_struct *task)
+{
+	struct trace_pid_list *pid_list;
+	struct trace_array *tr = data;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+	trace_filter_add_remove_task(pid_list, self, task);
+}
+
+void trace_event_follow_fork(struct trace_array *tr, bool enable)
+{
+	if (enable) {
+		register_trace_prio_sched_process_fork(event_filter_pid_sched_process_fork,
+						       tr, INT_MIN);
+		register_trace_prio_sched_process_exit(event_filter_pid_sched_process_exit,
+						       tr, INT_MAX);
+	} else {
+		unregister_trace_sched_process_fork(event_filter_pid_sched_process_fork,
+						    tr);
+		unregister_trace_sched_process_exit(event_filter_pid_sched_process_exit,
+						    tr);
+	}
+}
+
+static void
+event_filter_pid_sched_switch_probe_pre(void *data, bool preempt,
+		    struct task_struct *prev, struct task_struct *next)
+{
+	struct trace_array *tr = data;
+	struct trace_pid_list *pid_list;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	this_cpu_write(tr->trace_buffer.data->ignore_pid,
+		       trace_ignore_this_task(pid_list, prev) &&
+		       trace_ignore_this_task(pid_list, next));
+}
+
+static void
+event_filter_pid_sched_switch_probe_post(void *data, bool preempt,
+		    struct task_struct *prev, struct task_struct *next)
+{
+	struct trace_array *tr = data;
+	struct trace_pid_list *pid_list;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	this_cpu_write(tr->trace_buffer.data->ignore_pid,
+		       trace_ignore_this_task(pid_list, next));
+}
+
+static void
+event_filter_pid_sched_wakeup_probe_pre(void *data, struct task_struct *task)
+{
+	struct trace_array *tr = data;
+	struct trace_pid_list *pid_list;
+
+	/* Nothing to do if we are already tracing */
+	if (!this_cpu_read(tr->trace_buffer.data->ignore_pid))
+		return;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	this_cpu_write(tr->trace_buffer.data->ignore_pid,
+		       trace_ignore_this_task(pid_list, task));
+}
+
+static void
+event_filter_pid_sched_wakeup_probe_post(void *data, struct task_struct *task)
+{
+	struct trace_array *tr = data;
+	struct trace_pid_list *pid_list;
+
+	/* Nothing to do if we are not tracing */
+	if (this_cpu_read(tr->trace_buffer.data->ignore_pid))
+		return;
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	/* Set tracing if current is enabled */
+	this_cpu_write(tr->trace_buffer.data->ignore_pid,
+		       trace_ignore_this_task(pid_list, current));
+}
+
+static void __ftrace_clear_event_pids(struct trace_array *tr)
+{
+	struct trace_pid_list *pid_list;
+	struct trace_event_file *file;
+	int cpu;
+
+	pid_list = rcu_dereference_protected(tr->filtered_pids,
+					     lockdep_is_held(&event_mutex));
+	if (!pid_list)
+		return;
+
+	unregister_trace_sched_switch(event_filter_pid_sched_switch_probe_pre, tr);
+	unregister_trace_sched_switch(event_filter_pid_sched_switch_probe_post, tr);
+
+	unregister_trace_sched_wakeup(event_filter_pid_sched_wakeup_probe_pre, tr);
+	unregister_trace_sched_wakeup(event_filter_pid_sched_wakeup_probe_post, tr);
+
+	unregister_trace_sched_wakeup_new(event_filter_pid_sched_wakeup_probe_pre, tr);
+	unregister_trace_sched_wakeup_new(event_filter_pid_sched_wakeup_probe_post, tr);
+
+	unregister_trace_sched_waking(event_filter_pid_sched_wakeup_probe_pre, tr);
+	unregister_trace_sched_waking(event_filter_pid_sched_wakeup_probe_post, tr);
+
+	list_for_each_entry(file, &tr->events, list) {
+		clear_bit(EVENT_FILE_FL_PID_FILTER_BIT, &file->flags);
+	}
+
+	for_each_possible_cpu(cpu)
+		per_cpu_ptr(tr->trace_buffer.data, cpu)->ignore_pid = false;
+
+	rcu_assign_pointer(tr->filtered_pids, NULL);
+
+	/* Wait till all users are no longer using pid filtering */
+	synchronize_sched();
+
+	trace_free_pid_list(pid_list);
+}
+
+static void ftrace_clear_event_pids(struct trace_array *tr)
+{
+	mutex_lock(&event_mutex);
+	__ftrace_clear_event_pids(tr);
+	mutex_unlock(&event_mutex);
+}
+
 static void __put_system(struct event_subsystem *system)
 {
 	struct event_filter *filter = system->filter;
@@ -460,8 +662,7 @@ static void __put_system(struct event_subsystem *system)
 		kfree(filter->filter_string);
 		kfree(filter);
 	}
-	if (system->ref_count & SYSTEM_FL_FREE_NAME)
-		kfree(system->name);
+	kfree_const(system->name);
 	kfree(system);
 }
 
@@ -705,7 +906,8 @@ t_next(struct seq_file *m, void *v, loff_t *pos)
 		 * The ftrace subsystem is for showing formats only.
 		 * They can not be enabled or disabled via the event files.
 		 */
-		if (call->class && call->class->reg)
+		if (call->class && call->class->reg &&
+		    !(call->flags & TRACE_EVENT_FL_IGNORE_ENABLE))
 			return file;
 	}
 
@@ -776,6 +978,45 @@ static int t_show(struct seq_file *m, void *v)
 
 static void t_stop(struct seq_file *m, void *p)
 {
+	mutex_unlock(&event_mutex);
+}
+
+static void *
+p_next(struct seq_file *m, void *v, loff_t *pos)
+{
+	struct trace_array *tr = m->private;
+	struct trace_pid_list *pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	return trace_pid_next(pid_list, v, pos);
+}
+
+static void *p_start(struct seq_file *m, loff_t *pos)
+	__acquires(RCU)
+{
+	struct trace_pid_list *pid_list;
+	struct trace_array *tr = m->private;
+
+	/*
+	 * Grab the mutex, to keep calls to p_next() having the same
+	 * tr->filtered_pids as p_start() has.
+	 * If we just passed the tr->filtered_pids around, then RCU would
+	 * have been enough, but doing that makes things more complex.
+	 */
+	mutex_lock(&event_mutex);
+	rcu_read_lock_sched();
+
+	pid_list = rcu_dereference_sched(tr->filtered_pids);
+
+	if (!pid_list)
+		return NULL;
+
+	return trace_pid_start(pid_list, pos);
+}
+
+static void p_stop(struct seq_file *m, void *p)
+	__releases(RCU)
+{
+	rcu_read_unlock_sched();
 	mutex_unlock(&event_mutex);
 }
 
@@ -1124,15 +1365,9 @@ event_filter_write(struct file *filp, const char __user *ubuf, size_t cnt,
 	if (cnt >= PAGE_SIZE)
 		return -EINVAL;
 
-	buf = (char *)__get_free_page(GFP_TEMPORARY);
-	if (!buf)
-		return -ENOMEM;
-
-	if (copy_from_user(buf, ubuf, cnt)) {
-		free_page((unsigned long) buf);
-		return -EFAULT;
-	}
-	buf[cnt] = '\0';
+	buf = memdup_user_nul(ubuf, cnt);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	mutex_lock(&event_mutex);
 	file = event_file_data(filp);
@@ -1140,7 +1375,7 @@ event_filter_write(struct file *filp, const char __user *ubuf, size_t cnt,
 		err = apply_event_filter(file, buf);
 	mutex_unlock(&event_mutex);
 
-	free_page((unsigned long) buf);
+	kfree(buf);
 	if (err < 0)
 		return err;
 
@@ -1291,18 +1526,12 @@ subsystem_filter_write(struct file *filp, const char __user *ubuf, size_t cnt,
 	if (cnt >= PAGE_SIZE)
 		return -EINVAL;
 
-	buf = (char *)__get_free_page(GFP_TEMPORARY);
-	if (!buf)
-		return -ENOMEM;
-
-	if (copy_from_user(buf, ubuf, cnt)) {
-		free_page((unsigned long) buf);
-		return -EFAULT;
-	}
-	buf[cnt] = '\0';
+	buf = memdup_user_nul(ubuf, cnt);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 
 	err = apply_subsystem_event_filter(dir, buf);
-	free_page((unsigned long) buf);
+	kfree(buf);
 	if (err < 0)
 		return err;
 
@@ -1336,8 +1565,105 @@ show_header(struct file *filp, char __user *ubuf, size_t cnt, loff_t *ppos)
 	return r;
 }
 
+static void ignore_task_cpu(void *data)
+{
+	struct trace_array *tr = data;
+	struct trace_pid_list *pid_list;
+
+	/*
+	 * This function is called by on_each_cpu() while the
+	 * event_mutex is held.
+	 */
+	pid_list = rcu_dereference_protected(tr->filtered_pids,
+					     mutex_is_locked(&event_mutex));
+
+	this_cpu_write(tr->trace_buffer.data->ignore_pid,
+		       trace_ignore_this_task(pid_list, current));
+}
+
+static ssize_t
+ftrace_event_pid_write(struct file *filp, const char __user *ubuf,
+		       size_t cnt, loff_t *ppos)
+{
+	struct seq_file *m = filp->private_data;
+	struct trace_array *tr = m->private;
+	struct trace_pid_list *filtered_pids = NULL;
+	struct trace_pid_list *pid_list;
+	struct trace_event_file *file;
+	ssize_t ret;
+
+	if (!cnt)
+		return 0;
+
+	ret = tracing_update_buffers();
+	if (ret < 0)
+		return ret;
+
+	mutex_lock(&event_mutex);
+
+	filtered_pids = rcu_dereference_protected(tr->filtered_pids,
+					     lockdep_is_held(&event_mutex));
+
+	ret = trace_pid_write(filtered_pids, &pid_list, ubuf, cnt);
+	if (ret < 0)
+		goto out;
+
+	rcu_assign_pointer(tr->filtered_pids, pid_list);
+
+	list_for_each_entry(file, &tr->events, list) {
+		set_bit(EVENT_FILE_FL_PID_FILTER_BIT, &file->flags);
+	}
+
+	if (filtered_pids) {
+		synchronize_sched();
+		trace_free_pid_list(filtered_pids);
+	} else if (pid_list) {
+		/*
+		 * Register a probe that is called before all other probes
+		 * to set ignore_pid if next or prev do not match.
+		 * Register a probe this is called after all other probes
+		 * to only keep ignore_pid set if next pid matches.
+		 */
+		register_trace_prio_sched_switch(event_filter_pid_sched_switch_probe_pre,
+						 tr, INT_MAX);
+		register_trace_prio_sched_switch(event_filter_pid_sched_switch_probe_post,
+						 tr, 0);
+
+		register_trace_prio_sched_wakeup(event_filter_pid_sched_wakeup_probe_pre,
+						 tr, INT_MAX);
+		register_trace_prio_sched_wakeup(event_filter_pid_sched_wakeup_probe_post,
+						 tr, 0);
+
+		register_trace_prio_sched_wakeup_new(event_filter_pid_sched_wakeup_probe_pre,
+						     tr, INT_MAX);
+		register_trace_prio_sched_wakeup_new(event_filter_pid_sched_wakeup_probe_post,
+						     tr, 0);
+
+		register_trace_prio_sched_waking(event_filter_pid_sched_wakeup_probe_pre,
+						 tr, INT_MAX);
+		register_trace_prio_sched_waking(event_filter_pid_sched_wakeup_probe_post,
+						 tr, 0);
+	}
+
+	/*
+	 * Ignoring of pids is done at task switch. But we have to
+	 * check for those tasks that are currently running.
+	 * Always do this in case a pid was appended or removed.
+	 */
+	on_each_cpu(ignore_task_cpu, tr, 1);
+
+ out:
+	mutex_unlock(&event_mutex);
+
+	if (ret > 0)
+		*ppos += ret;
+
+	return ret;
+}
+
 static int ftrace_event_avail_open(struct inode *inode, struct file *file);
 static int ftrace_event_set_open(struct inode *inode, struct file *file);
+static int ftrace_event_set_pid_open(struct inode *inode, struct file *file);
 static int ftrace_event_release(struct inode *inode, struct file *file);
 
 static const struct seq_operations show_event_seq_ops = {
@@ -1354,6 +1680,13 @@ static const struct seq_operations show_set_event_seq_ops = {
 	.stop = t_stop,
 };
 
+static const struct seq_operations show_set_pid_seq_ops = {
+	.start = p_start,
+	.next = p_next,
+	.show = trace_pid_show,
+	.stop = p_stop,
+};
+
 static const struct file_operations ftrace_avail_fops = {
 	.open = ftrace_event_avail_open,
 	.read = seq_read,
@@ -1365,6 +1698,14 @@ static const struct file_operations ftrace_set_event_fops = {
 	.open = ftrace_event_set_open,
 	.read = seq_read,
 	.write = ftrace_event_write,
+	.llseek = seq_lseek,
+	.release = ftrace_event_release,
+};
+
+static const struct file_operations ftrace_set_event_pid_fops = {
+	.open = ftrace_event_set_pid_open,
+	.read = seq_read,
+	.write = ftrace_event_pid_write,
 	.llseek = seq_lseek,
 	.release = ftrace_event_release,
 };
@@ -1479,6 +1820,26 @@ ftrace_event_set_open(struct inode *inode, struct file *file)
 	return ret;
 }
 
+static int
+ftrace_event_set_pid_open(struct inode *inode, struct file *file)
+{
+	const struct seq_operations *seq_ops = &show_set_pid_seq_ops;
+	struct trace_array *tr = inode->i_private;
+	int ret;
+
+	if (trace_array_get(tr) < 0)
+		return -ENODEV;
+
+	if ((file->f_mode & FMODE_WRITE) &&
+	    (file->f_flags & O_TRUNC))
+		ftrace_clear_event_pids(tr);
+
+	ret = ftrace_event_open(inode, file, seq_ops);
+	if (ret < 0)
+		trace_array_put(tr);
+	return ret;
+}
+
 static struct event_subsystem *
 create_new_subsystem(const char *name)
 {
@@ -1492,13 +1853,9 @@ create_new_subsystem(const char *name)
 	system->ref_count = 1;
 
 	/* Only allocate if dynamic (kprobes and modules) */
-	if (!core_kernel_data((unsigned long)name)) {
-		system->ref_count |= SYSTEM_FL_FREE_NAME;
-		system->name = kstrdup(name, GFP_KERNEL);
-		if (!system->name)
-			goto out_free;
-	} else
-		system->name = name;
+	system->name = kstrdup_const(name, GFP_KERNEL);
+	if (!system->name)
+		goto out_free;
 
 	system->filter = NULL;
 
@@ -1511,8 +1868,7 @@ create_new_subsystem(const char *name)
 	return system;
 
  out_free:
-	if (system->ref_count & SYSTEM_FL_FREE_NAME)
-		kfree(system->name);
+	kfree_const(system->name);
 	kfree(system);
 	return NULL;
 }
@@ -1647,9 +2003,18 @@ event_create_dir(struct dentry *parent, struct trace_event_file *file)
 	trace_create_file("filter", 0644, file->dir, file,
 			  &ftrace_event_filter_fops);
 
-	trace_create_file("trigger", 0644, file->dir, file,
-			  &event_trigger_fops);
+	/*
+	 * Only event directories that can be enabled should have
+	 * triggers.
+	 */
+	if (!(call->flags & TRACE_EVENT_FL_IGNORE_ENABLE))
+		trace_create_file("trigger", 0644, file->dir, file,
+				  &event_trigger_fops);
 
+#ifdef CONFIG_HIST_TRIGGERS
+	trace_create_file("hist", 0444, file->dir, file,
+			  &event_hist_fops);
+#endif
 	trace_create_file("format", 0444, file->dir, call,
 			  &ftrace_event_format_fops);
 
@@ -2478,6 +2843,9 @@ create_event_toplevel_files(struct dentry *parent, struct trace_array *tr)
 		return -ENOMEM;
 	}
 
+	entry = tracefs_create_file("set_event_pid", 0644, parent,
+				    tr, &ftrace_set_event_pid_fops);
+
 	/* ring buffer internal formats */
 	trace_create_file("header_page", 0444, d_events,
 			  ring_buffer_print_page_header,
@@ -2558,6 +2926,9 @@ int event_trace_del_tracer(struct trace_array *tr)
 	/* Disable any event triggers and associated soft-disabled events */
 	clear_event_triggers(tr);
 
+	/* Clear the pid list */
+	__ftrace_clear_event_pids(tr);
+
 	/* Disable any running events */
 	__ftrace_set_clr_event_nolock(tr, NULL, NULL, NULL, 0);
 
@@ -2595,16 +2966,16 @@ early_enable_events(struct trace_array *tr, bool disable_first)
 
 		if (!token)
 			break;
-		if (!*token)
-			continue;
 
-		/* Restarting syscalls requires that we stop them first */
-		if (disable_first)
-			ftrace_set_clr_event(tr, token, 0);
+		if (*token) {
+			/* Restarting syscalls requires that we stop them first */
+			if (disable_first)
+				ftrace_set_clr_event(tr, token, 0);
 
-		ret = ftrace_set_clr_event(tr, token, 1);
-		if (ret)
-			pr_warn("Failed to enable trace event: %s\n", token);
+			ret = ftrace_set_clr_event(tr, token, 1);
+			if (ret)
+				pr_warn("Failed to enable trace event: %s\n", token);
+		}
 
 		/* Put back the comma to allow this to be called again */
 		if (buf)
@@ -2891,7 +3262,9 @@ static __init void event_trace_self_tests(void)
 
 static DEFINE_PER_CPU(atomic_t, ftrace_test_event_disable);
 
-static void
+static struct trace_event_file event_trace_file __initdata;
+
+static void __init
 function_test_events_call(unsigned long ip, unsigned long parent_ip,
 			  struct ftrace_ops *op, struct pt_regs *pt_regs)
 {
@@ -2913,17 +3286,17 @@ function_test_events_call(unsigned long ip, unsigned long parent_ip,
 
 	local_save_flags(flags);
 
-	event = trace_current_buffer_lock_reserve(&buffer,
-						  TRACE_FN, sizeof(*entry),
-						  flags, pc);
+	event = trace_event_buffer_lock_reserve(&buffer, &event_trace_file,
+						TRACE_FN, sizeof(*entry),
+						flags, pc);
 	if (!event)
 		goto out;
 	entry	= ring_buffer_event_data(event);
 	entry->ip			= ip;
 	entry->parent_ip		= parent_ip;
 
-	trace_buffer_unlock_commit(buffer, event, flags, pc);
-
+	event_trigger_unlock_commit(&event_trace_file, buffer, event,
+				    entry, flags, pc);
  out:
 	atomic_dec(&per_cpu(ftrace_test_event_disable, cpu));
 	preempt_enable_notrace();
@@ -2938,6 +3311,11 @@ static struct ftrace_ops trace_ops __initdata  =
 static __init void event_trace_self_test_with_function(void)
 {
 	int ret;
+
+	event_trace_file.tr = top_trace_array();
+	if (WARN_ON(!event_trace_file.tr))
+		return;
+
 	ret = register_ftrace_function(&trace_ops);
 	if (WARN_ON(ret < 0)) {
 		pr_info("Failed to enable function tracer for event tests\n");

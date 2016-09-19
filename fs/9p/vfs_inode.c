@@ -244,7 +244,7 @@ struct inode *v9fs_alloc_inode(struct super_block *sb)
 		return NULL;
 #ifdef CONFIG_9P_FSCACHE
 	v9inode->fscache = NULL;
-	spin_lock_init(&v9inode->fscache_lock);
+	mutex_init(&v9inode->fscache_lock);
 #endif
 	v9inode->writeback_fid = NULL;
 	v9inode->cache_validity = 0;
@@ -451,9 +451,9 @@ void v9fs_evict_inode(struct inode *inode)
 {
 	struct v9fs_inode *v9inode = V9FS_I(inode);
 
-	truncate_inode_pages_final(inode->i_mapping);
+	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
-	filemap_fdatawrite(inode->i_mapping);
+	filemap_fdatawrite(&inode->i_data);
 
 	v9fs_cache_inode_put_cookie(inode);
 	/* clunk the fid stashed in writeback_fid */
@@ -595,7 +595,7 @@ static int v9fs_remove(struct inode *dir, struct dentry *dentry, int flags)
 
 	v9ses = v9fs_inode2v9ses(dir);
 	inode = d_inode(dentry);
-	dfid = v9fs_fid_lookup(dentry->d_parent);
+	dfid = v9fs_parent_fid(dentry);
 	if (IS_ERR(dfid)) {
 		retval = PTR_ERR(dfid);
 		p9_debug(P9_DEBUG_VFS, "fid lookup failed %d\n", retval);
@@ -653,7 +653,7 @@ v9fs_create(struct v9fs_session_info *v9ses, struct inode *dir,
 	ofid = NULL;
 	fid = NULL;
 	name = (char *) dentry->d_name.name;
-	dfid = v9fs_fid_lookup(dentry->d_parent);
+	dfid = v9fs_parent_fid(dentry);
 	if (IS_ERR(dfid)) {
 		err = PTR_ERR(dfid);
 		p9_debug(P9_DEBUG_VFS, "fid lookup failed %d\n", err);
@@ -661,7 +661,7 @@ v9fs_create(struct v9fs_session_info *v9ses, struct inode *dir,
 	}
 
 	/* clone a fid to use for creation */
-	ofid = p9_client_walk(dfid, 0, NULL, 1);
+	ofid = clone_fid(dfid);
 	if (IS_ERR(ofid)) {
 		err = PTR_ERR(ofid);
 		p9_debug(P9_DEBUG_VFS, "p9_client_walk failed %d\n", err);
@@ -798,7 +798,7 @@ struct dentry *v9fs_vfs_lookup(struct inode *dir, struct dentry *dentry,
 
 	v9ses = v9fs_inode2v9ses(dir);
 	/* We can walk d_parent because we hold the dir->i_mutex */
-	dfid = v9fs_fid_lookup(dentry->d_parent);
+	dfid = v9fs_parent_fid(dentry);
 	if (IS_ERR(dfid))
 		return ERR_CAST(dfid);
 
@@ -853,7 +853,7 @@ v9fs_vfs_atomic_open(struct inode *dir, struct dentry *dentry,
 	struct p9_fid *fid, *inode_fid;
 	struct dentry *res = NULL;
 
-	if (d_unhashed(dentry)) {
+	if (d_in_lookup(dentry)) {
 		res = v9fs_vfs_lookup(dir, dentry, 0);
 		if (IS_ERR(res))
 			return PTR_ERR(res);
@@ -975,13 +975,13 @@ v9fs_vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	if (IS_ERR(oldfid))
 		return PTR_ERR(oldfid);
 
-	olddirfid = v9fs_fid_clone(old_dentry->d_parent);
+	olddirfid = clone_fid(v9fs_parent_fid(old_dentry));
 	if (IS_ERR(olddirfid)) {
 		retval = PTR_ERR(olddirfid);
 		goto done;
 	}
 
-	newdirfid = v9fs_fid_clone(new_dentry->d_parent);
+	newdirfid = clone_fid(v9fs_parent_fid(new_dentry));
 	if (IS_ERR(newdirfid)) {
 		retval = PTR_ERR(newdirfid);
 		goto clunk_olddir;
@@ -1071,7 +1071,7 @@ v9fs_vfs_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	if (IS_ERR(st))
 		return PTR_ERR(st);
 
-	v9fs_stat2inode(st, d_inode(dentry), d_inode(dentry)->i_sb);
+	v9fs_stat2inode(st, d_inode(dentry), dentry->d_sb);
 	generic_fillattr(d_inode(dentry), stat);
 
 	p9stat_free(st);
@@ -1223,18 +1223,26 @@ ino_t v9fs_qid2ino(struct p9_qid *qid)
 }
 
 /**
- * v9fs_vfs_follow_link - follow a symlink path
+ * v9fs_vfs_get_link - follow a symlink path
  * @dentry: dentry for symlink
- * @cookie: place to pass the data to put_link()
+ * @inode: inode for symlink
+ * @done: delayed call for when we are done with the return value
  */
 
-static const char *v9fs_vfs_follow_link(struct dentry *dentry, void **cookie)
+static const char *v9fs_vfs_get_link(struct dentry *dentry,
+				     struct inode *inode,
+				     struct delayed_call *done)
 {
-	struct v9fs_session_info *v9ses = v9fs_dentry2v9ses(dentry);
-	struct p9_fid *fid = v9fs_fid_lookup(dentry);
+	struct v9fs_session_info *v9ses;
+	struct p9_fid *fid;
 	struct p9_wstat *st;
 	char *res;
 
+	if (!dentry)
+		return ERR_PTR(-ECHILD);
+
+	v9ses = v9fs_dentry2v9ses(dentry);
+	fid = v9fs_fid_lookup(dentry);
 	p9_debug(P9_DEBUG_VFS, "%pd\n", dentry);
 
 	if (IS_ERR(fid))
@@ -1259,7 +1267,8 @@ static const char *v9fs_vfs_follow_link(struct dentry *dentry, void **cookie)
 
 	p9stat_free(st);
 	kfree(st);
-	return *cookie = res;
+	set_delayed_call(done, kfree_link, res);
+	return res;
 }
 
 /**
@@ -1368,9 +1377,6 @@ v9fs_vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t rde
 		 dir->i_ino, dentry, mode,
 		 MAJOR(rdev), MINOR(rdev));
 
-	if (!new_valid_dev(rdev))
-		return -EINVAL;
-
 	/* build extension */
 	if (S_ISBLK(mode))
 		sprintf(name, "b %u %u", MAJOR(rdev), MINOR(rdev));
@@ -1455,8 +1461,7 @@ static const struct inode_operations v9fs_file_inode_operations = {
 
 static const struct inode_operations v9fs_symlink_inode_operations = {
 	.readlink = generic_readlink,
-	.follow_link = v9fs_vfs_follow_link,
-	.put_link = kfree_put_link,
+	.get_link = v9fs_vfs_get_link,
 	.getattr = v9fs_vfs_getattr,
 	.setattr = v9fs_vfs_setattr,
 };

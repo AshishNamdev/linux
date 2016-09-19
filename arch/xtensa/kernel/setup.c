@@ -24,8 +24,8 @@
 #include <linux/percpu.h>
 #include <linux/clk-provider.h>
 #include <linux/cpu.h>
+#include <linux/of.h>
 #include <linux/of_fdt.h>
-#include <linux/of_platform.h>
 
 #if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE)
 # include <linux/console.h>
@@ -190,7 +190,7 @@ static int __init parse_bootparam(const bp_tag_t* tag)
 #ifdef CONFIG_OF
 bool __initdata dt_memory_scan = false;
 
-#if XCHAL_HAVE_PTP_MMU && XCHAL_HAVE_SPANNING_WAY
+#if !XCHAL_HAVE_PTP_MMU || XCHAL_HAVE_SPANNING_WAY
 unsigned long xtensa_kio_paddr = XCHAL_KIO_DEFAULT_PADDR;
 EXPORT_SYMBOL(xtensa_kio_paddr);
 
@@ -255,7 +255,6 @@ void __init early_init_devtree(void *params)
 static int __init xtensa_device_probe(void)
 {
 	of_clk_init(NULL);
-	of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL);
 	return 0;
 }
 
@@ -334,7 +333,10 @@ extern char _Level5InterruptVector_text_end;
 extern char _Level6InterruptVector_text_start;
 extern char _Level6InterruptVector_text_end;
 #endif
-
+#ifdef CONFIG_SMP
+extern char _SecondaryResetVector_text_start;
+extern char _SecondaryResetVector_text_end;
+#endif
 
 
 #ifdef CONFIG_S32C1I_SELFTEST
@@ -506,6 +508,10 @@ void __init setup_arch(char **cmdline_p)
 		    __pa(&_Level6InterruptVector_text_end), 0);
 #endif
 
+#ifdef CONFIG_SMP
+	mem_reserve(__pa(&_SecondaryResetVector_text_start),
+		    __pa(&_SecondaryResetVector_text_end), 0);
+#endif
 	parse_early_param();
 	bootmem_init();
 

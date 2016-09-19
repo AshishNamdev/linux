@@ -222,12 +222,8 @@ static int elantech_write_reg(struct psmouse *psmouse, unsigned char reg,
  */
 static void elantech_packet_dump(struct psmouse *psmouse)
 {
-	int	i;
-
-	psmouse_printk(KERN_DEBUG, psmouse, "PS/2 packet [");
-	for (i = 0; i < psmouse->pktsize; i++)
-		printk("%s0x%02x ", i ? ", " : " ", psmouse->packet[i]);
-	printk("]\n");
+	psmouse_printk(KERN_DEBUG, psmouse, "PS/2 packet [%*ph]\n",
+		       psmouse->pktsize, psmouse->packet);
 }
 
 /*
@@ -1222,7 +1218,7 @@ static int elantech_set_input_params(struct psmouse *psmouse)
 			input_set_abs_params(dev, ABS_TOOL_WIDTH, ETP_WMIN_V2,
 					     ETP_WMAX_V2, 0, 0);
 		}
-		input_mt_init_slots(dev, 2, 0);
+		input_mt_init_slots(dev, 2, INPUT_MT_SEMI_MT);
 		input_set_abs_params(dev, ABS_MT_POSITION_X, x_min, x_max, 0, 0);
 		input_set_abs_params(dev, ABS_MT_POSITION_Y, y_min, y_max, 0, 0);
 		break;
@@ -1520,6 +1516,13 @@ static const struct dmi_system_id elantech_dmi_force_crc_enabled[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "LIFEBOOK E544"),
 		},
 	},
+	{
+		/* Fujitsu LIFEBOOK U745 does not work with crc_enabled == 0 */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "LIFEBOOK U745"),
+		},
+	},
 #endif
 	{ }
 };
@@ -1561,13 +1564,7 @@ static int elantech_set_properties(struct elantech_data *etd)
 		case 5:
 			etd->hw_version = 3;
 			break;
-		case 6:
-		case 7:
-		case 8:
-		case 9:
-		case 10:
-		case 13:
-		case 14:
+		case 6 ... 14:
 			etd->hw_version = 4;
 			break;
 		default:
@@ -1707,7 +1704,7 @@ int elantech_init(struct psmouse *psmouse)
 		snprintf(etd->tp_phys, sizeof(etd->tp_phys), "%s/input1",
 			psmouse->ps2dev.serio->phys);
 		tp_dev->phys = etd->tp_phys;
-		tp_dev->name = "Elantech PS/2 TrackPoint";
+		tp_dev->name = "ETPS/2 Elantech TrackPoint";
 		tp_dev->id.bustype = BUS_I8042;
 		tp_dev->id.vendor  = 0x0002;
 		tp_dev->id.product = PSMOUSE_ELANTECH;

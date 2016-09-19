@@ -59,7 +59,7 @@ static void cifs_set_ops(struct inode *inode)
 
 		/* check if server can support readpages */
 		if (cifs_sb_master_tcon(cifs_sb)->ses->server->maxBuf <
-				PAGE_CACHE_SIZE + MAX_CIFS_HDR_SIZE)
+				PAGE_SIZE + MAX_CIFS_HDR_SIZE)
 			inode->i_data.a_ops = &cifs_addr_ops_smallbuf;
 		else
 			inode->i_data.a_ops = &cifs_addr_ops;
@@ -814,8 +814,21 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 			}
 		} else
 			fattr.cf_uniqueid = iunique(sb, ROOT_I);
-	} else
-		fattr.cf_uniqueid = CIFS_I(*inode)->uniqueid;
+	} else {
+		if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) &&
+		    validinum == false && server->ops->get_srv_inum) {
+			/*
+			 * Pass a NULL tcon to ensure we don't make a round
+			 * trip to the server. This only works for SMB2+.
+			 */
+			tmprc = server->ops->get_srv_inum(xid,
+				NULL, cifs_sb, full_path,
+				&fattr.cf_uniqueid, data);
+			if (tmprc)
+				fattr.cf_uniqueid = CIFS_I(*inode)->uniqueid;
+		} else
+			fattr.cf_uniqueid = CIFS_I(*inode)->uniqueid;
+	}
 
 	/* query for SFU type info if supported and needed */
 	if (fattr.cf_cifsattrs & ATTR_SYSTEM &&
@@ -855,6 +868,13 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 			rc = -ENOMEM;
 	} else {
 		/* we already have inode, update it */
+
+		/* if uniqueid is different, return error */
+		if (unlikely(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM &&
+		    CIFS_I(*inode)->uniqueid != fattr.cf_uniqueid)) {
+			rc = -ESTALE;
+			goto cgii_exit;
+		}
 
 		/* if filetype is different, return error */
 		if (unlikely(((*inode)->i_mode & S_IFMT) !=
@@ -982,10 +1002,26 @@ struct inode *cifs_root_iget(struct super_block *sb)
 	struct inode *inode = NULL;
 	long rc;
 	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
+	char *path = NULL;
+	int len;
+
+	if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_USE_PREFIX_PATH)
+	    && cifs_sb->prepath) {
+		len = strlen(cifs_sb->prepath);
+		path = kzalloc(len + 2 /* leading sep + null */, GFP_KERNEL);
+		if (path == NULL)
+			return ERR_PTR(-ENOMEM);
+		path[0] = '/';
+		memcpy(path+1, cifs_sb->prepath, len);
+	} else {
+		path = kstrdup("", GFP_KERNEL);
+		if (path == NULL)
+			return ERR_PTR(-ENOMEM);
+	}
 
 	xid = get_xid();
 	if (tcon->unix_ext) {
-		rc = cifs_get_inode_info_unix(&inode, "", sb, xid);
+		rc = cifs_get_inode_info_unix(&inode, path, sb, xid);
 		/* some servers mistakenly claim POSIX support */
 		if (rc != -EOPNOTSUPP)
 			goto iget_no_retry;
@@ -993,7 +1029,8 @@ struct inode *cifs_root_iget(struct super_block *sb)
 		tcon->unix_ext = false;
 	}
 
-	rc = cifs_get_inode_info(&inode, "", NULL, sb, xid, NULL);
+	convert_delimiter(path, CIFS_DIR_SEP(cifs_sb));
+	rc = cifs_get_inode_info(&inode, path, NULL, sb, xid, NULL);
 
 iget_no_retry:
 	if (!inode) {
@@ -1022,6 +1059,7 @@ iget_no_retry:
 	}
 
 out:
+	kfree(path);
 	/* can not call macro free_xid here since in a void func
 	 * TODO: This is no longer true
 	 */
@@ -1831,11 +1869,11 @@ cifs_invalidate_mapping(struct inode *inode)
  * @word: long word containing the bit lock
  */
 static int
-cifs_wait_bit_killable(struct wait_bit_key *key)
+cifs_wait_bit_killable(struct wait_bit_key *key, int mode)
 {
-	if (fatal_signal_pending(current))
-		return -ERESTARTSYS;
 	freezable_schedule_unsafe();
+	if (signal_pending_state(mode, current))
+		return -ERESTARTSYS;
 	return 0;
 }
 
@@ -1999,8 +2037,8 @@ int cifs_getattr(struct vfsmount *mnt, struct dentry *dentry,
 
 static int cifs_truncate_page(struct address_space *mapping, loff_t from)
 {
-	pgoff_t index = from >> PAGE_CACHE_SHIFT;
-	unsigned offset = from & (PAGE_CACHE_SIZE - 1);
+	pgoff_t index = from >> PAGE_SHIFT;
+	unsigned offset = from & (PAGE_SIZE - 1);
 	struct page *page;
 	int rc = 0;
 
@@ -2008,9 +2046,9 @@ static int cifs_truncate_page(struct address_space *mapping, loff_t from)
 	if (!page)
 		return -ENOMEM;
 
-	zero_user_segment(page, offset, PAGE_CACHE_SIZE);
+	zero_user_segment(page, offset, PAGE_SIZE);
 	unlock_page(page);
-	page_cache_release(page);
+	put_page(page);
 	return rc;
 }
 
@@ -2034,7 +2072,6 @@ cifs_set_file_size(struct inode *inode, struct iattr *attrs,
 	struct tcon_link *tlink = NULL;
 	struct cifs_tcon *tcon = NULL;
 	struct TCP_Server_Info *server;
-	struct cifs_io_parms io_parms;
 
 	/*
 	 * To avoid spurious oplock breaks from server, in the case of
@@ -2056,18 +2093,6 @@ cifs_set_file_size(struct inode *inode, struct iattr *attrs,
 			rc = -ENOSYS;
 		cifsFileInfo_put(open_file);
 		cifs_dbg(FYI, "SetFSize for attrs rc = %d\n", rc);
-		if ((rc == -EINVAL) || (rc == -EOPNOTSUPP)) {
-			unsigned int bytes_written;
-
-			io_parms.netfid = open_file->fid.netfid;
-			io_parms.pid = open_file->pid;
-			io_parms.tcon = tcon;
-			io_parms.offset = 0;
-			io_parms.length = attrs->ia_size;
-			rc = CIFSSMBWrite(xid, &io_parms, &bytes_written,
-					  NULL, NULL, 1);
-			cifs_dbg(FYI, "Wrt seteof rc %d\n", rc);
-		}
 	} else
 		rc = -EINVAL;
 
@@ -2093,28 +2118,7 @@ cifs_set_file_size(struct inode *inode, struct iattr *attrs,
 	else
 		rc = -ENOSYS;
 	cifs_dbg(FYI, "SetEOF by path (setattrs) rc = %d\n", rc);
-	if ((rc == -EINVAL) || (rc == -EOPNOTSUPP)) {
-		__u16 netfid;
-		int oplock = 0;
 
-		rc = SMBLegacyOpen(xid, tcon, full_path, FILE_OPEN,
-				   GENERIC_WRITE, CREATE_NOT_DIR, &netfid,
-				   &oplock, NULL, cifs_sb->local_nls,
-				   cifs_remap(cifs_sb));
-		if (rc == 0) {
-			unsigned int bytes_written;
-
-			io_parms.netfid = netfid;
-			io_parms.pid = current->tgid;
-			io_parms.tcon = tcon;
-			io_parms.offset = 0;
-			io_parms.length = attrs->ia_size;
-			rc = CIFSSMBWrite(xid, &io_parms, &bytes_written, NULL,
-					  NULL,  1);
-			cifs_dbg(FYI, "wrt seteof rc %d\n", rc);
-			CIFSSMBClose(xid, tcon, netfid);
-		}
-	}
 	if (tlink)
 		cifs_put_tlink(tlink);
 
@@ -2432,8 +2436,7 @@ cifs_setattr_exit:
 int
 cifs_setattr(struct dentry *direntry, struct iattr *attrs)
 {
-	struct inode *inode = d_inode(direntry);
-	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
+	struct cifs_sb_info *cifs_sb = CIFS_SB(direntry->d_sb);
 	struct cifs_tcon *pTcon = cifs_sb_master_tcon(cifs_sb);
 
 	if (pTcon->unix_ext)

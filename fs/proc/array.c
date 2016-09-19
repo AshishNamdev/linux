@@ -83,6 +83,7 @@
 #include <linux/tracehook.h>
 #include <linux/string_helpers.h>
 #include <linux/user_namespace.h>
+#include <linux/fs_struct.h>
 
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -91,18 +92,18 @@
 static inline void task_name(struct seq_file *m, struct task_struct *p)
 {
 	char *buf;
+	size_t size;
 	char tcomm[sizeof(p->comm)];
+	int ret;
 
 	get_task_comm(tcomm, p);
 
 	seq_puts(m, "Name:\t");
-	buf = m->buf + m->count;
 
-	/* Ignore error for now */
-	buf += string_escape_str(tcomm, buf, m->size - m->count,
-				 ESCAPE_SPACE | ESCAPE_SPECIAL, "\n\\");
+	size = seq_get_buf(m, &buf);
+	ret = string_escape_str(tcomm, buf, size, ESCAPE_SPACE | ESCAPE_SPECIAL, "\n\\");
+	seq_commit(m, ret < size ? ret : -1);
 
-	m->count = buf - m->buf;
 	seq_putc(m, '\n');
 }
 
@@ -139,12 +140,25 @@ static inline const char *get_task_state(struct task_struct *tsk)
 	return task_state_array[fls(state)];
 }
 
+static inline int get_task_umask(struct task_struct *tsk)
+{
+	struct fs_struct *fs;
+	int umask = -ENOENT;
+
+	task_lock(tsk);
+	fs = tsk->fs;
+	if (fs)
+		umask = fs->umask;
+	task_unlock(tsk);
+	return umask;
+}
+
 static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 				struct pid *pid, struct task_struct *p)
 {
 	struct user_namespace *user_ns = seq_user_ns(m);
 	struct group_info *group_info;
-	int g;
+	int g, umask;
 	struct task_struct *tracer;
 	const struct cred *cred;
 	pid_t ppid, tpid = 0, tgid, ngid;
@@ -161,6 +175,10 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 	tgid = task_tgid_nr_ns(p, ns);
 	ngid = task_numa_group_id(p);
 	cred = get_task_cred(p);
+
+	umask = get_task_umask(p);
+	if (umask >= 0)
+		seq_printf(m, "Umask:\t%#04o\n", umask);
 
 	task_lock(p);
 	if (p->files)
@@ -375,7 +393,7 @@ int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
 static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 			struct pid *pid, struct task_struct *task, int whole)
 {
-	unsigned long vsize, eip, esp, wchan = ~0UL;
+	unsigned long vsize, eip, esp, wchan = 0;
 	int priority, nice;
 	int tty_pgrp = -1, tty_nr = 0;
 	sigset_t sigign, sigcatch;
@@ -395,7 +413,7 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 
 	state = *get_task_state(task);
 	vsize = eip = esp = 0;
-	permitted = ptrace_may_access(task, PTRACE_MODE_READ | PTRACE_MODE_NOAUDIT);
+	permitted = ptrace_may_access(task, PTRACE_MODE_READ_FSCREDS | PTRACE_MODE_NOAUDIT);
 	mm = get_task_mm(task);
 	if (mm) {
 		vsize = task_vsize(mm);
@@ -507,7 +525,19 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	seq_put_decimal_ull(m, ' ', task->blocked.sig[0] & 0x7fffffffUL);
 	seq_put_decimal_ull(m, ' ', sigign.sig[0] & 0x7fffffffUL);
 	seq_put_decimal_ull(m, ' ', sigcatch.sig[0] & 0x7fffffffUL);
-	seq_put_decimal_ull(m, ' ', wchan);
+
+	/*
+	 * We used to output the absolute kernel address, but that's an
+	 * information leak - so instead we show a 0/1 flag here, to signal
+	 * to user-space whether there's a wchan field in /proc/PID/wchan.
+	 *
+	 * This works with older implementations of procps as well.
+	 */
+	if (wchan)
+		seq_puts(m, " 1");
+	else
+		seq_puts(m, " 0");
+
 	seq_put_decimal_ull(m, ' ', 0);
 	seq_put_decimal_ull(m, ' ', 0);
 	seq_put_decimal_ll(m, ' ', task->exit_signal);

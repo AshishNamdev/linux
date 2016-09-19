@@ -104,7 +104,8 @@ int efx_farch_test_registers(struct efx_nic *efx,
 			     const struct efx_farch_register_test *regs,
 			     size_t n_regs)
 {
-	unsigned address = 0, i, j;
+	unsigned address = 0;
+	int i, j;
 	efx_oword_t mask, imask, original, reg, buf;
 
 	for (i = 0; i < n_regs; ++i) {
@@ -321,7 +322,9 @@ void efx_farch_tx_write(struct efx_tx_queue *tx_queue)
 	unsigned write_ptr;
 	unsigned old_write_count = tx_queue->write_count;
 
-	BUG_ON(tx_queue->write_count == tx_queue->insert_count);
+	tx_queue->xmit_more_available = false;
+	if (unlikely(tx_queue->write_count == tx_queue->insert_count))
+		return;
 
 	do {
 		write_ptr = tx_queue->write_count & tx_queue->ptr_mask;
@@ -2240,7 +2243,7 @@ efx_farch_filter_init_rx_auto(struct efx_nic *efx,
 	 */
 	spec->priority = EFX_FILTER_PRI_AUTO;
 	spec->flags = (EFX_FILTER_FLAG_RX |
-		       (efx->n_rx_channels > 1 ? EFX_FILTER_FLAG_RX_RSS : 0) |
+		       (efx_rss_enabled(efx) ? EFX_FILTER_FLAG_RX_RSS : 0) |
 		       (efx->rx_scatter ? EFX_FILTER_FLAG_RX_SCATTER : 0));
 	spec->dmaq_id = 0;
 }

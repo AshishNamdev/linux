@@ -519,18 +519,14 @@ static int synaptics_set_mode(struct psmouse *psmouse)
 	struct synaptics_data *priv = psmouse->private;
 
 	priv->mode = 0;
-
-	if (priv->absolute_mode) {
+	if (priv->absolute_mode)
 		priv->mode |= SYN_BIT_ABSOLUTE_MODE;
-		if (SYN_CAP_EXTENDED(priv->capabilities))
-			priv->mode |= SYN_BIT_W_MODE;
-	}
-
-	if (!SYN_MODE_WMODE(priv->mode) && priv->disable_gesture)
+	if (priv->disable_gesture)
 		priv->mode |= SYN_BIT_DISABLE_GESTURE;
-
 	if (psmouse->rate >= 80)
 		priv->mode |= SYN_BIT_HIGH_RATE;
+	if (SYN_CAP_EXTENDED(priv->capabilities))
+		priv->mode |= SYN_BIT_W_MODE;
 
 	if (synaptics_mode_cmd(psmouse, priv->mode))
 		return -1;
@@ -866,8 +862,9 @@ static void synaptics_report_ext_buttons(struct psmouse *psmouse,
 	if (!SYN_CAP_MULTI_BUTTON_NO(priv->ext_cap))
 		return;
 
-	/* Bug in FW 8.1, buttons are reported only when ExtBit is 1 */
-	if (SYN_ID_FULL(priv->identity) == 0x801 &&
+	/* Bug in FW 8.1 & 8.2, buttons are reported only when ExtBit is 1 */
+	if ((SYN_ID_FULL(priv->identity) == 0x801 ||
+	     SYN_ID_FULL(priv->identity) == 0x802) &&
 	    !((psmouse->packet[0] ^ psmouse->packet[3]) & 0x02))
 		return;
 

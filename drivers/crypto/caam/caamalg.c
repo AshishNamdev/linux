@@ -441,6 +441,9 @@ static int aead_set_sh_desc(struct crypto_aead *aead)
 			       OP_ALG_AAI_CTR_MOD128);
 	const bool is_rfc3686 = alg->caam.rfc3686;
 
+	if (!ctx->authsize)
+		return 0;
+
 	/* NULL encryption / decryption */
 	if (!ctx->enckeylen)
 		return aead_null_set_sh_desc(aead);
@@ -553,7 +556,10 @@ skip_enc:
 
 	/* Read and write assoclen bytes */
 	append_math_add(desc, VARSEQINLEN, ZERO, REG3, CAAM_CMD_SZ);
-	append_math_add(desc, VARSEQOUTLEN, ZERO, REG3, CAAM_CMD_SZ);
+	if (alg->caam.geniv)
+		append_math_add_imm_u32(desc, VARSEQOUTLEN, REG3, IMM, ivsize);
+	else
+		append_math_add(desc, VARSEQOUTLEN, ZERO, REG3, CAAM_CMD_SZ);
 
 	/* Skip assoc data */
 	append_seq_fifo_store(desc, 0, FIFOST_TYPE_SKIP | FIFOLDST_VLF);
@@ -561,6 +567,14 @@ skip_enc:
 	/* read assoc before reading payload */
 	append_seq_fifo_load(desc, 0, FIFOLD_CLASS_CLASS2 | FIFOLD_TYPE_MSG |
 			     KEY_VLF);
+
+	if (alg->caam.geniv) {
+		append_seq_load(desc, ivsize, LDST_CLASS_1_CCB |
+				LDST_SRCDST_BYTE_CONTEXT |
+				(ctx1_iv_off << LDST_OFFSET_SHIFT));
+		append_move(desc, MOVE_SRC_CLASS1CTX | MOVE_DEST_CLASS2INFIFO |
+			    (ctx1_iv_off << MOVE_OFFSET_SHIFT) | ivsize);
+	}
 
 	/* Load Counter into CONTEXT1 reg */
 	if (is_rfc3686)
@@ -614,7 +628,7 @@ skip_enc:
 		keys_fit_inline = true;
 
 	/* aead_givencrypt shared descriptor */
-	desc = ctx->sh_desc_givenc;
+	desc = ctx->sh_desc_enc;
 
 	/* Note: Context registers are saved. */
 	init_sh_desc_key_aead(desc, ctx, keys_fit_inline, is_rfc3686);
@@ -645,12 +659,12 @@ copy_iv:
 	append_operation(desc, ctx->class2_alg_type |
 			 OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
 
-	/* ivsize + cryptlen = seqoutlen - authsize */
-	append_math_sub_imm_u32(desc, REG3, SEQOUTLEN, IMM, ctx->authsize);
-
 	/* Read and write assoclen bytes */
 	append_math_add(desc, VARSEQINLEN, ZERO, REG3, CAAM_CMD_SZ);
 	append_math_add(desc, VARSEQOUTLEN, ZERO, REG3, CAAM_CMD_SZ);
+
+	/* ivsize + cryptlen = seqoutlen - authsize */
+	append_math_sub_imm_u32(desc, REG3, SEQOUTLEN, IMM, ctx->authsize);
 
 	/* Skip assoc data */
 	append_seq_fifo_store(desc, 0, FIFOST_TYPE_SKIP | FIFOLDST_VLF);
@@ -697,7 +711,7 @@ copy_iv:
 	ctx->sh_desc_enc_dma = dma_map_single(jrdev, desc,
 					      desc_bytes(desc),
 					      DMA_TO_DEVICE);
-	if (dma_mapping_error(jrdev, ctx->sh_desc_givenc_dma)) {
+	if (dma_mapping_error(jrdev, ctx->sh_desc_enc_dma)) {
 		dev_err(jrdev, "unable to map shared descriptor\n");
 		return -ENOMEM;
 	}
@@ -1705,14 +1719,131 @@ static int ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 	return ret;
 }
 
+static int xts_ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
+				 const u8 *key, unsigned int keylen)
+{
+	struct caam_ctx *ctx = crypto_ablkcipher_ctx(ablkcipher);
+	struct device *jrdev = ctx->jrdev;
+	u32 *key_jump_cmd, *desc;
+	__be64 sector_size = cpu_to_be64(512);
+
+	if (keylen != 2 * AES_MIN_KEY_SIZE  && keylen != 2 * AES_MAX_KEY_SIZE) {
+		crypto_ablkcipher_set_flags(ablkcipher,
+					    CRYPTO_TFM_RES_BAD_KEY_LEN);
+		dev_err(jrdev, "key size mismatch\n");
+		return -EINVAL;
+	}
+
+	memcpy(ctx->key, key, keylen);
+	ctx->key_dma = dma_map_single(jrdev, ctx->key, keylen, DMA_TO_DEVICE);
+	if (dma_mapping_error(jrdev, ctx->key_dma)) {
+		dev_err(jrdev, "unable to map key i/o memory\n");
+		return -ENOMEM;
+	}
+	ctx->enckeylen = keylen;
+
+	/* xts_ablkcipher_encrypt shared descriptor */
+	desc = ctx->sh_desc_enc;
+	init_sh_desc(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	/* Skip if already shared */
+	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
+				   JUMP_COND_SHRD);
+
+	/* Load class1 keys only */
+	append_key_as_imm(desc, (void *)ctx->key, ctx->enckeylen,
+			  ctx->enckeylen, CLASS_1 | KEY_DEST_CLASS_REG);
+
+	/* Load sector size with index 40 bytes (0x28) */
+	append_cmd(desc, CMD_LOAD | IMMEDIATE | LDST_SRCDST_BYTE_CONTEXT |
+		   LDST_CLASS_1_CCB | (0x28 << LDST_OFFSET_SHIFT) | 8);
+	append_data(desc, (void *)&sector_size, 8);
+
+	set_jump_tgt_here(desc, key_jump_cmd);
+
+	/*
+	 * create sequence for loading the sector index
+	 * Upper 8B of IV - will be used as sector index
+	 * Lower 8B of IV - will be discarded
+	 */
+	append_cmd(desc, CMD_SEQ_LOAD | LDST_SRCDST_BYTE_CONTEXT |
+		   LDST_CLASS_1_CCB | (0x20 << LDST_OFFSET_SHIFT) | 8);
+	append_seq_fifo_load(desc, 8, FIFOLD_CLASS_SKIP);
+
+	/* Load operation */
+	append_operation(desc, ctx->class1_alg_type | OP_ALG_AS_INITFINAL |
+			 OP_ALG_ENCRYPT);
+
+	/* Perform operation */
+	ablkcipher_append_src_dst(desc);
+
+	ctx->sh_desc_enc_dma = dma_map_single(jrdev, desc, desc_bytes(desc),
+					      DMA_TO_DEVICE);
+	if (dma_mapping_error(jrdev, ctx->sh_desc_enc_dma)) {
+		dev_err(jrdev, "unable to map shared descriptor\n");
+		return -ENOMEM;
+	}
+#ifdef DEBUG
+	print_hex_dump(KERN_ERR,
+		       "xts ablkcipher enc shdesc@" __stringify(__LINE__) ": ",
+		       DUMP_PREFIX_ADDRESS, 16, 4, desc, desc_bytes(desc), 1);
+#endif
+
+	/* xts_ablkcipher_decrypt shared descriptor */
+	desc = ctx->sh_desc_dec;
+
+	init_sh_desc(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	/* Skip if already shared */
+	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
+				   JUMP_COND_SHRD);
+
+	/* Load class1 key only */
+	append_key_as_imm(desc, (void *)ctx->key, ctx->enckeylen,
+			  ctx->enckeylen, CLASS_1 | KEY_DEST_CLASS_REG);
+
+	/* Load sector size with index 40 bytes (0x28) */
+	append_cmd(desc, CMD_LOAD | IMMEDIATE | LDST_SRCDST_BYTE_CONTEXT |
+		   LDST_CLASS_1_CCB | (0x28 << LDST_OFFSET_SHIFT) | 8);
+	append_data(desc, (void *)&sector_size, 8);
+
+	set_jump_tgt_here(desc, key_jump_cmd);
+
+	/*
+	 * create sequence for loading the sector index
+	 * Upper 8B of IV - will be used as sector index
+	 * Lower 8B of IV - will be discarded
+	 */
+	append_cmd(desc, CMD_SEQ_LOAD | LDST_SRCDST_BYTE_CONTEXT |
+		   LDST_CLASS_1_CCB | (0x20 << LDST_OFFSET_SHIFT) | 8);
+	append_seq_fifo_load(desc, 8, FIFOLD_CLASS_SKIP);
+
+	/* Load operation */
+	append_dec_op1(desc, ctx->class1_alg_type);
+
+	/* Perform operation */
+	ablkcipher_append_src_dst(desc);
+
+	ctx->sh_desc_dec_dma = dma_map_single(jrdev, desc, desc_bytes(desc),
+					      DMA_TO_DEVICE);
+	if (dma_mapping_error(jrdev, ctx->sh_desc_dec_dma)) {
+		dma_unmap_single(jrdev, ctx->sh_desc_enc_dma,
+				 desc_bytes(ctx->sh_desc_enc), DMA_TO_DEVICE);
+		dev_err(jrdev, "unable to map shared descriptor\n");
+		return -ENOMEM;
+	}
+#ifdef DEBUG
+	print_hex_dump(KERN_ERR,
+		       "xts ablkcipher dec shdesc@" __stringify(__LINE__) ": ",
+		       DUMP_PREFIX_ADDRESS, 16, 4, desc, desc_bytes(desc), 1);
+#endif
+
+	return 0;
+}
+
 /*
  * aead_edesc - s/w-extended aead descriptor
  * @assoc_nents: number of segments in associated data (SPI+Seq) scatterlist
- * @assoc_chained: if source is chained
  * @src_nents: number of segments in input scatterlist
- * @src_chained: if source is chained
  * @dst_nents: number of segments in output scatterlist
- * @dst_chained: if destination is chained
  * @iv_dma: dma address of iv for checking continuity and link table
  * @desc: h/w descriptor (variable length; must not exceed MAX_CAAM_DESCSIZE)
  * @sec4_sg_bytes: length of dma mapped sec4_sg space
@@ -1721,11 +1852,8 @@ static int ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
  */
 struct aead_edesc {
 	int assoc_nents;
-	bool assoc_chained;
 	int src_nents;
-	bool src_chained;
 	int dst_nents;
-	bool dst_chained;
 	dma_addr_t iv_dma;
 	int sec4_sg_bytes;
 	dma_addr_t sec4_sg_dma;
@@ -1736,9 +1864,7 @@ struct aead_edesc {
 /*
  * ablkcipher_edesc - s/w-extended ablkcipher descriptor
  * @src_nents: number of segments in input scatterlist
- * @src_chained: if source is chained
  * @dst_nents: number of segments in output scatterlist
- * @dst_chained: if destination is chained
  * @iv_dma: dma address of iv for checking continuity and link table
  * @desc: h/w descriptor (variable length; must not exceed MAX_CAAM_DESCSIZE)
  * @sec4_sg_bytes: length of dma mapped sec4_sg space
@@ -1747,9 +1873,7 @@ struct aead_edesc {
  */
 struct ablkcipher_edesc {
 	int src_nents;
-	bool src_chained;
 	int dst_nents;
-	bool dst_chained;
 	dma_addr_t iv_dma;
 	int sec4_sg_bytes;
 	dma_addr_t sec4_sg_dma;
@@ -1759,18 +1883,15 @@ struct ablkcipher_edesc {
 
 static void caam_unmap(struct device *dev, struct scatterlist *src,
 		       struct scatterlist *dst, int src_nents,
-		       bool src_chained, int dst_nents, bool dst_chained,
+		       int dst_nents,
 		       dma_addr_t iv_dma, int ivsize, dma_addr_t sec4_sg_dma,
 		       int sec4_sg_bytes)
 {
 	if (dst != src) {
-		dma_unmap_sg_chained(dev, src, src_nents ? : 1, DMA_TO_DEVICE,
-				     src_chained);
-		dma_unmap_sg_chained(dev, dst, dst_nents ? : 1, DMA_FROM_DEVICE,
-				     dst_chained);
+		dma_unmap_sg(dev, src, src_nents ? : 1, DMA_TO_DEVICE);
+		dma_unmap_sg(dev, dst, dst_nents ? : 1, DMA_FROM_DEVICE);
 	} else {
-		dma_unmap_sg_chained(dev, src, src_nents ? : 1,
-				     DMA_BIDIRECTIONAL, src_chained);
+		dma_unmap_sg(dev, src, src_nents ? : 1, DMA_BIDIRECTIONAL);
 	}
 
 	if (iv_dma)
@@ -1785,8 +1906,7 @@ static void aead_unmap(struct device *dev,
 		       struct aead_request *req)
 {
 	caam_unmap(dev, req->src, req->dst,
-		   edesc->src_nents, edesc->src_chained, edesc->dst_nents,
-		   edesc->dst_chained, 0, 0,
+		   edesc->src_nents, edesc->dst_nents, 0, 0,
 		   edesc->sec4_sg_dma, edesc->sec4_sg_bytes);
 }
 
@@ -1798,8 +1918,8 @@ static void ablkcipher_unmap(struct device *dev,
 	int ivsize = crypto_ablkcipher_ivsize(ablkcipher);
 
 	caam_unmap(dev, req->src, req->dst,
-		   edesc->src_nents, edesc->src_chained, edesc->dst_nents,
-		   edesc->dst_chained, edesc->iv_dma, ivsize,
+		   edesc->src_nents, edesc->dst_nents,
+		   edesc->iv_dma, ivsize,
 		   edesc->sec4_sg_dma, edesc->sec4_sg_bytes);
 }
 
@@ -2041,7 +2161,7 @@ static void init_authenc_job(struct aead_request *req,
 
 	init_aead_job(req, edesc, all_contig, encrypt);
 
-	if (ivsize && (is_rfc3686 || !(alg->caam.geniv && encrypt)))
+	if (ivsize && ((is_rfc3686 && encrypt) || !alg->caam.geniv))
 		append_load_as_imm(desc, req->iv, ivsize,
 				   LDST_CLASS_1_CCB |
 				   LDST_SRCDST_BYTE_CONTEXT |
@@ -2169,22 +2289,18 @@ static struct aead_edesc *aead_edesc_alloc(struct aead_request *req,
 	struct aead_edesc *edesc;
 	int sgc;
 	bool all_contig = true;
-	bool src_chained = false, dst_chained = false;
 	int sec4_sg_index, sec4_sg_len = 0, sec4_sg_bytes;
 	unsigned int authsize = ctx->authsize;
 
 	if (unlikely(req->dst != req->src)) {
-		src_nents = sg_count(req->src, req->assoclen + req->cryptlen,
-				     &src_chained);
+		src_nents = sg_count(req->src, req->assoclen + req->cryptlen);
 		dst_nents = sg_count(req->dst,
 				     req->assoclen + req->cryptlen +
-					(encrypt ? authsize : (-authsize)),
-				     &dst_chained);
+					(encrypt ? authsize : (-authsize)));
 	} else {
 		src_nents = sg_count(req->src,
 				     req->assoclen + req->cryptlen +
-					(encrypt ? authsize : 0),
-				     &src_chained);
+					(encrypt ? authsize : 0));
 	}
 
 	/* Check if data are contiguous. */
@@ -2207,37 +2323,35 @@ static struct aead_edesc *aead_edesc_alloc(struct aead_request *req,
 	}
 
 	if (likely(req->src == req->dst)) {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_BIDIRECTIONAL, src_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_BIDIRECTIONAL);
 		if (unlikely(!sgc)) {
 			dev_err(jrdev, "unable to map source\n");
 			kfree(edesc);
 			return ERR_PTR(-ENOMEM);
 		}
 	} else {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_TO_DEVICE, src_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_TO_DEVICE);
 		if (unlikely(!sgc)) {
 			dev_err(jrdev, "unable to map source\n");
 			kfree(edesc);
 			return ERR_PTR(-ENOMEM);
 		}
 
-		sgc = dma_map_sg_chained(jrdev, req->dst, dst_nents ? : 1,
-					 DMA_FROM_DEVICE, dst_chained);
+		sgc = dma_map_sg(jrdev, req->dst, dst_nents ? : 1,
+				 DMA_FROM_DEVICE);
 		if (unlikely(!sgc)) {
 			dev_err(jrdev, "unable to map destination\n");
-			dma_unmap_sg_chained(jrdev, req->src, src_nents ? : 1,
-					     DMA_TO_DEVICE, src_chained);
+			dma_unmap_sg(jrdev, req->src, src_nents ? : 1,
+				     DMA_TO_DEVICE);
 			kfree(edesc);
 			return ERR_PTR(-ENOMEM);
 		}
 	}
 
 	edesc->src_nents = src_nents;
-	edesc->src_chained = src_chained;
 	edesc->dst_nents = dst_nents;
-	edesc->dst_chained = dst_chained;
 	edesc->sec4_sg = (void *)edesc + sizeof(struct aead_edesc) +
 			 desc_bytes;
 	*all_contig_ptr = all_contig;
@@ -2434,20 +2548,6 @@ static int aead_decrypt(struct aead_request *req)
 	return ret;
 }
 
-static int aead_givdecrypt(struct aead_request *req)
-{
-	struct crypto_aead *aead = crypto_aead_reqtfm(req);
-	unsigned int ivsize = crypto_aead_ivsize(aead);
-
-	if (req->cryptlen < ivsize)
-		return -EINVAL;
-
-	req->cryptlen -= ivsize;
-	req->assoclen += ivsize;
-
-	return aead_decrypt(req);
-}
-
 /*
  * allocate and map the ablkcipher extended descriptor for ablkcipher
  */
@@ -2467,22 +2567,21 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 	bool iv_contig = false;
 	int sgc;
 	int ivsize = crypto_ablkcipher_ivsize(ablkcipher);
-	bool src_chained = false, dst_chained = false;
 	int sec4_sg_index;
 
-	src_nents = sg_count(req->src, req->nbytes, &src_chained);
+	src_nents = sg_count(req->src, req->nbytes);
 
 	if (req->dst != req->src)
-		dst_nents = sg_count(req->dst, req->nbytes, &dst_chained);
+		dst_nents = sg_count(req->dst, req->nbytes);
 
 	if (likely(req->src == req->dst)) {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_BIDIRECTIONAL, src_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_BIDIRECTIONAL);
 	} else {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_TO_DEVICE, src_chained);
-		sgc = dma_map_sg_chained(jrdev, req->dst, dst_nents ? : 1,
-					 DMA_FROM_DEVICE, dst_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_TO_DEVICE);
+		sgc = dma_map_sg(jrdev, req->dst, dst_nents ? : 1,
+				 DMA_FROM_DEVICE);
 	}
 
 	iv_dma = dma_map_single(jrdev, req->info, ivsize, DMA_TO_DEVICE);
@@ -2511,9 +2610,7 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 	}
 
 	edesc->src_nents = src_nents;
-	edesc->src_chained = src_chained;
 	edesc->dst_nents = dst_nents;
-	edesc->dst_chained = dst_chained;
 	edesc->sec4_sg_bytes = sec4_sg_bytes;
 	edesc->sec4_sg = (void *)edesc + sizeof(struct ablkcipher_edesc) +
 			 desc_bytes;
@@ -2646,22 +2743,21 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 	bool iv_contig = false;
 	int sgc;
 	int ivsize = crypto_ablkcipher_ivsize(ablkcipher);
-	bool src_chained = false, dst_chained = false;
 	int sec4_sg_index;
 
-	src_nents = sg_count(req->src, req->nbytes, &src_chained);
+	src_nents = sg_count(req->src, req->nbytes);
 
 	if (unlikely(req->dst != req->src))
-		dst_nents = sg_count(req->dst, req->nbytes, &dst_chained);
+		dst_nents = sg_count(req->dst, req->nbytes);
 
 	if (likely(req->src == req->dst)) {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_BIDIRECTIONAL, src_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_BIDIRECTIONAL);
 	} else {
-		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
-					 DMA_TO_DEVICE, src_chained);
-		sgc = dma_map_sg_chained(jrdev, req->dst, dst_nents ? : 1,
-					 DMA_FROM_DEVICE, dst_chained);
+		sgc = dma_map_sg(jrdev, req->src, src_nents ? : 1,
+				 DMA_TO_DEVICE);
+		sgc = dma_map_sg(jrdev, req->dst, dst_nents ? : 1,
+				 DMA_FROM_DEVICE);
 	}
 
 	/*
@@ -2690,9 +2786,7 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 	}
 
 	edesc->src_nents = src_nents;
-	edesc->src_chained = src_chained;
 	edesc->dst_nents = dst_nents;
-	edesc->dst_chained = dst_chained;
 	edesc->sec4_sg_bytes = sec4_sg_bytes;
 	edesc->sec4_sg = (void *)edesc + sizeof(struct ablkcipher_edesc) +
 			 desc_bytes;
@@ -2871,7 +2965,23 @@ static struct caam_alg_template driver_algs[] = {
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			},
 		.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_CTR_MOD128,
-	}
+	},
+	{
+		.name = "xts(aes)",
+		.driver_name = "xts-aes-caam",
+		.blocksize = AES_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_ABLKCIPHER,
+		.template_ablkcipher = {
+			.setkey = xts_ablkcipher_setkey,
+			.encrypt = ablkcipher_encrypt,
+			.decrypt = ablkcipher_decrypt,
+			.geniv = "eseqiv",
+			.min_keysize = 2 * AES_MIN_KEY_SIZE,
+			.max_keysize = 2 * AES_MAX_KEY_SIZE,
+			.ivsize = AES_BLOCK_SIZE,
+			},
+		.class1_alg_type = OP_ALG_ALGSEL_AES | OP_ALG_AAI_XTS,
+	},
 };
 
 static struct caam_aead_alg driver_aeads[] = {
@@ -3097,7 +3207,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = MD5_DIGEST_SIZE,
 		},
@@ -3143,7 +3253,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = SHA1_DIGEST_SIZE,
 		},
@@ -3189,7 +3299,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = SHA224_DIGEST_SIZE,
 		},
@@ -3235,7 +3345,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = SHA256_DIGEST_SIZE,
 		},
@@ -3281,7 +3391,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = SHA384_DIGEST_SIZE,
 		},
@@ -3327,7 +3437,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = AES_BLOCK_SIZE,
 			.maxauthsize = SHA512_DIGEST_SIZE,
 		},
@@ -3373,7 +3483,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = MD5_DIGEST_SIZE,
 		},
@@ -3421,7 +3531,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = SHA1_DIGEST_SIZE,
 		},
@@ -3469,7 +3579,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = SHA224_DIGEST_SIZE,
 		},
@@ -3517,7 +3627,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = SHA256_DIGEST_SIZE,
 		},
@@ -3565,7 +3675,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = SHA384_DIGEST_SIZE,
 		},
@@ -3613,7 +3723,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES3_EDE_BLOCK_SIZE,
 			.maxauthsize = SHA512_DIGEST_SIZE,
 		},
@@ -3659,7 +3769,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = MD5_DIGEST_SIZE,
 		},
@@ -3705,7 +3815,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = SHA1_DIGEST_SIZE,
 		},
@@ -3751,7 +3861,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = SHA224_DIGEST_SIZE,
 		},
@@ -3797,7 +3907,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = SHA256_DIGEST_SIZE,
 		},
@@ -3843,7 +3953,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = SHA384_DIGEST_SIZE,
 		},
@@ -3889,7 +3999,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = DES_BLOCK_SIZE,
 			.maxauthsize = SHA512_DIGEST_SIZE,
 		},
@@ -3938,7 +4048,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = MD5_DIGEST_SIZE,
 		},
@@ -3989,7 +4099,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = SHA1_DIGEST_SIZE,
 		},
@@ -4040,7 +4150,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = SHA224_DIGEST_SIZE,
 		},
@@ -4091,7 +4201,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = SHA256_DIGEST_SIZE,
 		},
@@ -4142,7 +4252,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = SHA384_DIGEST_SIZE,
 		},
@@ -4193,7 +4303,7 @@ static struct caam_aead_alg driver_aeads[] = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
 			.encrypt = aead_encrypt,
-			.decrypt = aead_givdecrypt,
+			.decrypt = aead_decrypt,
 			.ivsize = CTR_RFC3686_IV_SIZE,
 			.maxauthsize = SHA512_DIGEST_SIZE,
 		},

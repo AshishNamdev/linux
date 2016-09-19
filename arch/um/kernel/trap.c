@@ -73,7 +73,7 @@ good_area:
 	do {
 		int fault;
 
-		fault = handle_mm_fault(mm, vma, address, flags);
+		fault = handle_mm_fault(vma, address, flags);
 
 		if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 			goto out_nosemaphore;
@@ -220,7 +220,7 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		show_regs(container_of(regs, struct pt_regs, regs));
 		panic("Segfault with no mm");
 	}
-	else if (!is_user && address < TASK_SIZE) {
+	else if (!is_user && address > PAGE_SIZE && address < TASK_SIZE) {
 		show_regs(container_of(regs, struct pt_regs, regs));
 		panic("Kernel tried to access user memory at addr 0x%lx, ip 0x%lx",
 		       address, ip);

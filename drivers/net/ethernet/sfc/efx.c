@@ -600,6 +600,7 @@ fail:
  */
 static void efx_start_datapath(struct efx_nic *efx)
 {
+	netdev_features_t old_features = efx->net_dev->features;
 	bool old_rx_scatter = efx->rx_scatter;
 	struct efx_tx_queue *tx_queue;
 	struct efx_rx_queue *rx_queue;
@@ -643,6 +644,15 @@ static void efx_start_datapath(struct efx_nic *efx)
 			  "RX buf len=%u step=%u bpp=%u; page batch=%u\n",
 			  efx->rx_dma_len, efx->rx_page_buf_step,
 			  efx->rx_bufs_per_page, efx->rx_pages_per_batch);
+
+	/* Restore previously fixed features in hw_features and remove
+	 * features which are fixed now
+	 */
+	efx->net_dev->hw_features |= efx->net_dev->features;
+	efx->net_dev->hw_features &= ~efx->fixed_features;
+	efx->net_dev->features |= efx->fixed_features;
+	if (efx->net_dev->features != old_features)
+		netdev_features_change(efx->net_dev);
 
 	/* RX filters may also have scatter-enabled flags */
 	if (efx->rx_scatter != old_rx_scatter)
@@ -1247,11 +1257,9 @@ static int efx_init_io(struct efx_nic *efx)
 	 * masks event though they reject 46 bit masks.
 	 */
 	while (dma_mask > 0x7fffffffUL) {
-		if (dma_supported(&pci_dev->dev, dma_mask)) {
-			rc = dma_set_mask_and_coherent(&pci_dev->dev, dma_mask);
-			if (rc == 0)
-				break;
-		}
+		rc = dma_set_mask_and_coherent(&pci_dev->dev, dma_mask);
+		if (rc == 0)
+			break;
 		dma_mask >>= 1;
 	}
 	if (rc) {
@@ -1721,6 +1729,7 @@ static int efx_probe_filters(struct efx_nic *efx)
 
 	spin_lock_init(&efx->filter_lock);
 	init_rwsem(&efx->filter_sem);
+	mutex_lock(&efx->mac_lock);
 	down_write(&efx->filter_sem);
 	rc = efx->type->filter_table_probe(efx);
 	if (rc)
@@ -1728,25 +1737,48 @@ static int efx_probe_filters(struct efx_nic *efx)
 
 #ifdef CONFIG_RFS_ACCEL
 	if (efx->type->offload_features & NETIF_F_NTUPLE) {
-		efx->rps_flow_id = kcalloc(efx->type->max_rx_ip_filters,
-					   sizeof(*efx->rps_flow_id),
-					   GFP_KERNEL);
-		if (!efx->rps_flow_id) {
+		struct efx_channel *channel;
+		int i, success = 1;
+
+		efx_for_each_channel(channel, efx) {
+			channel->rps_flow_id =
+				kcalloc(efx->type->max_rx_ip_filters,
+					sizeof(*channel->rps_flow_id),
+					GFP_KERNEL);
+			if (!channel->rps_flow_id)
+				success = 0;
+			else
+				for (i = 0;
+				     i < efx->type->max_rx_ip_filters;
+				     ++i)
+					channel->rps_flow_id[i] =
+						RPS_FLOW_ID_INVALID;
+		}
+
+		if (!success) {
+			efx_for_each_channel(channel, efx)
+				kfree(channel->rps_flow_id);
 			efx->type->filter_table_remove(efx);
 			rc = -ENOMEM;
 			goto out_unlock;
 		}
+
+		efx->rps_expire_index = efx->rps_expire_channel = 0;
 	}
 #endif
 out_unlock:
 	up_write(&efx->filter_sem);
+	mutex_unlock(&efx->mac_lock);
 	return rc;
 }
 
 static void efx_remove_filters(struct efx_nic *efx)
 {
 #ifdef CONFIG_RFS_ACCEL
-	kfree(efx->rps_flow_id);
+	struct efx_channel *channel;
+
+	efx_for_each_channel(channel, efx)
+		kfree(channel->rps_flow_id);
 #endif
 	down_write(&efx->filter_sem);
 	efx->type->filter_table_remove(efx);
@@ -2061,8 +2093,7 @@ static void efx_init_napi_channel(struct efx_channel *channel)
 	channel->napi_dev = efx->net_dev;
 	netif_napi_add(channel->napi_dev, &channel->napi_str,
 		       efx_poll, napi_weight);
-	napi_hash_add(&channel->napi_str);
-	efx_channel_init_lock(channel);
+	efx_channel_busy_poll_init(channel);
 }
 
 static void efx_init_napi(struct efx_nic *efx)
@@ -2125,7 +2156,7 @@ static int efx_busy_poll(struct napi_struct *napi)
 	if (!netif_running(efx->net_dev))
 		return LL_FLUSH_FAILED;
 
-	if (!efx_channel_lock_poll(channel))
+	if (!efx_channel_try_lock_poll(channel))
 		return LL_FLUSH_BUSY;
 
 	old_rx_packets = channel->rx_queue.rx_packets;
@@ -2293,12 +2324,44 @@ static void efx_set_rx_mode(struct net_device *net_dev)
 static int efx_set_features(struct net_device *net_dev, netdev_features_t data)
 {
 	struct efx_nic *efx = netdev_priv(net_dev);
+	int rc;
 
 	/* If disabling RX n-tuple filtering, clear existing filters */
-	if (net_dev->features & ~data & NETIF_F_NTUPLE)
-		return efx->type->filter_clear_rx(efx, EFX_FILTER_PRI_MANUAL);
+	if (net_dev->features & ~data & NETIF_F_NTUPLE) {
+		rc = efx->type->filter_clear_rx(efx, EFX_FILTER_PRI_MANUAL);
+		if (rc)
+			return rc;
+	}
+
+	/* If Rx VLAN filter is changed, update filters via mac_reconfigure */
+	if ((net_dev->features ^ data) & NETIF_F_HW_VLAN_CTAG_FILTER) {
+		/* efx_set_rx_mode() will schedule MAC work to update filters
+		 * when a new features are finally set in net_dev.
+		 */
+		efx_set_rx_mode(net_dev);
+	}
 
 	return 0;
+}
+
+static int efx_vlan_rx_add_vid(struct net_device *net_dev, __be16 proto, u16 vid)
+{
+	struct efx_nic *efx = netdev_priv(net_dev);
+
+	if (efx->type->vlan_rx_add_vid)
+		return efx->type->vlan_rx_add_vid(efx, proto, vid);
+	else
+		return -EOPNOTSUPP;
+}
+
+static int efx_vlan_rx_kill_vid(struct net_device *net_dev, __be16 proto, u16 vid)
+{
+	struct efx_nic *efx = netdev_priv(net_dev);
+
+	if (efx->type->vlan_rx_kill_vid)
+		return efx->type->vlan_rx_kill_vid(efx, proto, vid);
+	else
+		return -EOPNOTSUPP;
 }
 
 static const struct net_device_ops efx_netdev_ops = {
@@ -2313,6 +2376,8 @@ static const struct net_device_ops efx_netdev_ops = {
 	.ndo_set_mac_address	= efx_set_mac_address,
 	.ndo_set_rx_mode	= efx_set_rx_mode,
 	.ndo_set_features	= efx_set_features,
+	.ndo_vlan_rx_add_vid	= efx_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= efx_vlan_rx_kill_vid,
 #ifdef CONFIG_SFC_SRIOV
 	.ndo_set_vf_mac		= efx_sriov_set_vf_mac,
 	.ndo_set_vf_vlan	= efx_sriov_set_vf_vlan,
@@ -2787,6 +2852,12 @@ static const struct pci_device_id efx_pci_table[] = {
 	 .driver_data = (unsigned long) &efx_hunt_a0_vf_nic_type},
 	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x0923),  /* SFC9140 PF */
 	 .driver_data = (unsigned long) &efx_hunt_a0_nic_type},
+	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x1923),  /* SFC9140 VF */
+	 .driver_data = (unsigned long) &efx_hunt_a0_vf_nic_type},
+	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x0a03),  /* SFC9220 PF */
+	 .driver_data = (unsigned long) &efx_hunt_a0_nic_type},
+	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x1a03),  /* SFC9220 VF */
+	 .driver_data = (unsigned long) &efx_hunt_a0_vf_nic_type},
 	{0}			/* end of list */
 };
 
@@ -3122,17 +3193,25 @@ static int efx_pci_probe(struct pci_dev *pci_dev,
 		return -ENOMEM;
 	efx = netdev_priv(net_dev);
 	efx->type = (const struct efx_nic_type *) entry->driver_data;
+	efx->fixed_features |= NETIF_F_HIGHDMA;
 	net_dev->features |= (efx->type->offload_features | NETIF_F_SG |
-			      NETIF_F_HIGHDMA | NETIF_F_TSO |
-			      NETIF_F_RXCSUM);
-	if (efx->type->offload_features & NETIF_F_V6_CSUM)
+			      NETIF_F_TSO | NETIF_F_RXCSUM);
+	if (efx->type->offload_features & (NETIF_F_IPV6_CSUM | NETIF_F_HW_CSUM))
 		net_dev->features |= NETIF_F_TSO6;
 	/* Mask for features that also apply to VLAN devices */
-	net_dev->vlan_features |= (NETIF_F_ALL_CSUM | NETIF_F_SG |
+	net_dev->vlan_features |= (NETIF_F_HW_CSUM | NETIF_F_SG |
 				   NETIF_F_HIGHDMA | NETIF_F_ALL_TSO |
 				   NETIF_F_RXCSUM);
-	/* All offloads can be toggled */
-	net_dev->hw_features = net_dev->features & ~NETIF_F_HIGHDMA;
+
+	net_dev->hw_features = net_dev->features & ~efx->fixed_features;
+
+	/* Disable VLAN filtering by default.  It may be enforced if
+	 * the feature is fixed (i.e. VLAN filters are required to
+	 * receive VLAN tagged packets due to vPort restrictions).
+	 */
+	net_dev->features &= ~NETIF_F_HW_VLAN_CTAG_FILTER;
+	net_dev->features |= efx->fixed_features;
+
 	pci_set_drvdata(pci_dev, efx);
 	SET_NETDEV_DEV(net_dev, &pci_dev->dev);
 	rc = efx_init_struct(efx, pci_dev, net_dev);
@@ -3171,14 +3250,15 @@ static int efx_pci_probe(struct pci_dev *pci_dev,
 	rtnl_lock();
 	rc = efx_mtd_probe(efx);
 	rtnl_unlock();
-	if (rc)
+	if (rc && rc != -EPERM)
 		netif_warn(efx, probe, efx->net_dev,
 			   "failed to create MTDs (%d)\n", rc);
 
 	rc = pci_enable_pcie_error_reporting(pci_dev);
 	if (rc && rc != -EINVAL)
-		netif_warn(efx, probe, efx->net_dev,
-			   "pci_enable_pcie_error_reporting failed (%d)\n", rc);
+		netif_notice(efx, probe, efx->net_dev,
+			     "PCIE error reporting unavailable (%d).\n",
+			     rc);
 
 	return 0;
 
@@ -3424,7 +3504,7 @@ out:
  * with our request for slot reset the mmio_enabled callback will never be
  * called, and the link_reset callback is not used by AER or EEH mechanisms.
  */
-static struct pci_error_handlers efx_err_handlers = {
+static const struct pci_error_handlers efx_err_handlers = {
 	.error_detected = efx_io_error_detected,
 	.slot_reset	= efx_io_slot_reset,
 	.resume		= efx_io_resume,

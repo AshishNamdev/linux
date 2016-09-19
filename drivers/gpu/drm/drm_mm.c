@@ -179,11 +179,13 @@ static void drm_mm_insert_helper(struct drm_mm_node *hole_node,
 int drm_mm_reserve_node(struct drm_mm *mm, struct drm_mm_node *node)
 {
 	struct drm_mm_node *hole;
-	u64 end = node->start + node->size;
+	u64 end;
 	u64 hole_start;
 	u64 hole_end;
 
 	BUG_ON(node == NULL);
+
+	end = node->start + node->size;
 
 	/* Find the relevant hole to add our node to */
 	drm_mm_for_each_hole(hole, mm, hole_start, hole_end) {
@@ -267,11 +269,11 @@ static void drm_mm_insert_helper_range(struct drm_mm_node *hole_node,
 	if (adj_end > end)
 		adj_end = end;
 
-	if (flags & DRM_MM_CREATE_TOP)
-		adj_start = adj_end - size;
-
 	if (mm->color_adjust)
 		mm->color_adjust(hole_node, color, &adj_start, &adj_end);
+
+	if (flags & DRM_MM_CREATE_TOP)
+		adj_start = adj_end - size;
 
 	if (alignment) {
 		u64 tmp = adj_start;

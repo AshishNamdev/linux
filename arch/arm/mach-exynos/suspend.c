@@ -19,10 +19,13 @@
 #include <linux/cpu_pm.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/of_address.h>
 #include <linux/err.h>
 #include <linux/regulator/machine.h>
+#include <linux/soc/samsung/exynos-pmu.h>
+#include <linux/soc/samsung/exynos-regs-pmu.h>
 
 #include <asm/cacheflush.h>
 #include <asm/hardware/cache-l2x0.h>
@@ -31,12 +34,11 @@
 #include <asm/smp_scu.h>
 #include <asm/suspend.h>
 
+#include <mach/map.h>
+
 #include <plat/pm-common.h>
 
 #include "common.h"
-#include "exynos-pmu.h"
-#include "regs-pmu.h"
-#include "regs-srom.h"
 
 #define REG_TABLE_END (-1U)
 
@@ -50,15 +52,6 @@
 struct exynos_wkup_irq {
 	unsigned int hwirq;
 	u32 mask;
-};
-
-static struct sleep_save exynos_core_save[] = {
-	/* SROM side */
-	SAVE_ITEM(S5P_SROM_BW),
-	SAVE_ITEM(S5P_SROM_BC0),
-	SAVE_ITEM(S5P_SROM_BC1),
-	SAVE_ITEM(S5P_SROM_BC2),
-	SAVE_ITEM(S5P_SROM_BC3),
 };
 
 struct exynos_pm_data {
@@ -177,54 +170,57 @@ static struct irq_chip exynos_pmu_chip = {
 #endif
 };
 
-static int exynos_pmu_domain_xlate(struct irq_domain *domain,
-				   struct device_node *controller,
-				   const u32 *intspec,
-				   unsigned int intsize,
-				   unsigned long *out_hwirq,
-				   unsigned int *out_type)
+static int exynos_pmu_domain_translate(struct irq_domain *d,
+				       struct irq_fwspec *fwspec,
+				       unsigned long *hwirq,
+				       unsigned int *type)
 {
-	if (domain->of_node != controller)
-		return -EINVAL;	/* Shouldn't happen, really... */
-	if (intsize != 3)
-		return -EINVAL;	/* Not GIC compliant */
-	if (intspec[0] != 0)
-		return -EINVAL;	/* No PPI should point to this domain */
+	if (is_of_node(fwspec->fwnode)) {
+		if (fwspec->param_count != 3)
+			return -EINVAL;
 
-	*out_hwirq = intspec[1];
-	*out_type = intspec[2];
-	return 0;
+		/* No PPI should point to this domain */
+		if (fwspec->param[0] != 0)
+			return -EINVAL;
+
+		*hwirq = fwspec->param[1];
+		*type = fwspec->param[2];
+		return 0;
+	}
+
+	return -EINVAL;
 }
 
 static int exynos_pmu_domain_alloc(struct irq_domain *domain,
 				   unsigned int virq,
 				   unsigned int nr_irqs, void *data)
 {
-	struct of_phandle_args *args = data;
-	struct of_phandle_args parent_args;
+	struct irq_fwspec *fwspec = data;
+	struct irq_fwspec parent_fwspec;
 	irq_hw_number_t hwirq;
 	int i;
 
-	if (args->args_count != 3)
+	if (fwspec->param_count != 3)
 		return -EINVAL;	/* Not GIC compliant */
-	if (args->args[0] != 0)
+	if (fwspec->param[0] != 0)
 		return -EINVAL;	/* No PPI should point to this domain */
 
-	hwirq = args->args[1];
+	hwirq = fwspec->param[1];
 
 	for (i = 0; i < nr_irqs; i++)
 		irq_domain_set_hwirq_and_chip(domain, virq + i, hwirq + i,
 					      &exynos_pmu_chip, NULL);
 
-	parent_args = *args;
-	parent_args.np = domain->parent->of_node;
-	return irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, &parent_args);
+	parent_fwspec = *fwspec;
+	parent_fwspec.fwnode = domain->parent->fwnode;
+	return irq_domain_alloc_irqs_parent(domain, virq, nr_irqs,
+					    &parent_fwspec);
 }
 
 static const struct irq_domain_ops exynos_pmu_domain_ops = {
-	.xlate	= exynos_pmu_domain_xlate,
-	.alloc	= exynos_pmu_domain_alloc,
-	.free	= irq_domain_free_irqs_common,
+	.translate	= exynos_pmu_domain_translate,
+	.alloc		= exynos_pmu_domain_alloc,
+	.free		= irq_domain_free_irqs_common,
 };
 
 static int __init exynos_pmu_irq_init(struct device_node *node,
@@ -259,10 +255,16 @@ static int __init exynos_pmu_irq_init(struct device_node *node,
 		return -ENOMEM;
 	}
 
+	/*
+	 * Clear the OF_POPULATED flag set in of_irq_init so that
+	 * later the Exynos PMU platform device won't be skipped.
+	 */
+	of_node_clear_flag(node, OF_POPULATED);
+
 	return 0;
 }
 
-#define EXYNOS_PMU_IRQ(symbol, name)	OF_DECLARE_2(irqchip, symbol, name, exynos_pmu_irq_init)
+#define EXYNOS_PMU_IRQ(symbol, name)	IRQCHIP_DECLARE(symbol, name, exynos_pmu_irq_init)
 
 EXYNOS_PMU_IRQ(exynos3250_pmu_irq, "samsung,exynos3250-pmu");
 EXYNOS_PMU_IRQ(exynos4210_pmu_irq, "samsung,exynos4210-pmu");
@@ -305,7 +307,7 @@ static int exynos5420_cpu_suspend(unsigned long arg)
 	unsigned int cluster = MPIDR_AFFINITY_LEVEL(mpidr, 1);
 	unsigned int cpu = MPIDR_AFFINITY_LEVEL(mpidr, 0);
 
-	__raw_writel(0x0, sysram_base_addr + EXYNOS5420_CPU_STATE);
+	writel_relaxed(0x0, sysram_base_addr + EXYNOS5420_CPU_STATE);
 
 	if (IS_ENABLED(CONFIG_EXYNOS5420_MCPM)) {
 		mcpm_set_entry_vector(cpu, cluster, exynos_cpu_resume);
@@ -339,8 +341,6 @@ static void exynos_pm_prepare(void)
 	/* Set wake-up mask registers */
 	exynos_pm_set_wakeup_mask();
 
-	s3c_pm_do_save(exynos_core_save, ARRAY_SIZE(exynos_core_save));
-
 	exynos_pm_enter_sleep_mode();
 
 	/* ensure at least INFORM0 has the resume address */
@@ -371,8 +371,6 @@ static void exynos5420_pm_prepare(void)
 	/* Set wake-up mask registers */
 	exynos_pm_set_wakeup_mask();
 
-	s3c_pm_do_save(exynos_core_save, ARRAY_SIZE(exynos_core_save));
-
 	exynos_pmu_spare3 = pmu_raw_readl(S5P_PMU_SPARE3);
 	/*
 	 * The cpu state needs to be saved and restored so that the
@@ -381,8 +379,8 @@ static void exynos5420_pm_prepare(void)
 	 * needs to restore it back in case, the primary cpu fails to
 	 * suspend for any reason.
 	 */
-	exynos5420_cpu_state = __raw_readl(sysram_base_addr +
-						EXYNOS5420_CPU_STATE);
+	exynos5420_cpu_state = readl_relaxed(sysram_base_addr +
+					     EXYNOS5420_CPU_STATE);
 
 	exynos_pm_enter_sleep_mode();
 
@@ -463,8 +461,6 @@ static void exynos_pm_resume(void)
 	/* For release retention */
 	exynos_pm_release_retention();
 
-	s3c_pm_do_restore_core(exynos_core_save, ARRAY_SIZE(exynos_core_save));
-
 	if (cpuid == ARM_CPU_PART_CORTEX_A9)
 		scu_enable(S5P_VA_SCU);
 
@@ -514,11 +510,11 @@ static void exynos5420_pm_resume(void)
 	/* Restore the CPU0 low power state register */
 	tmp = pmu_raw_readl(EXYNOS5_ARM_CORE0_SYS_PWR_REG);
 	pmu_raw_writel(tmp | S5P_CORE_LOCAL_PWR_EN,
-		EXYNOS5_ARM_CORE0_SYS_PWR_REG);
+		       EXYNOS5_ARM_CORE0_SYS_PWR_REG);
 
 	/* Restore the sysram cpu state register */
-	__raw_writel(exynos5420_cpu_state,
-		sysram_base_addr + EXYNOS5420_CPU_STATE);
+	writel_relaxed(exynos5420_cpu_state,
+		       sysram_base_addr + EXYNOS5420_CPU_STATE);
 
 	pmu_raw_writel(EXYNOS5420_USE_STANDBY_WFI_ALL,
 			S5P_CENTRAL_SEQ_OPTION);
@@ -530,8 +526,6 @@ static void exynos5420_pm_resume(void)
 	exynos_pm_release_retention();
 
 	pmu_raw_writel(exynos_pmu_spare3, S5P_PMU_SPARE3);
-
-	s3c_pm_do_restore_core(exynos_core_save, ARRAY_SIZE(exynos_core_save));
 
 early_wakeup:
 

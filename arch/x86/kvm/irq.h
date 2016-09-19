@@ -83,13 +83,30 @@ static inline struct kvm_pic *pic_irqchip(struct kvm *kvm)
 	return kvm->arch.vpic;
 }
 
+static inline int pic_in_kernel(struct kvm *kvm)
+{
+	int ret;
+
+	ret = (pic_irqchip(kvm) != NULL);
+	return ret;
+}
+
+static inline int irqchip_split(struct kvm *kvm)
+{
+	return kvm->arch.irqchip_split;
+}
+
 static inline int irqchip_in_kernel(struct kvm *kvm)
 {
 	struct kvm_pic *vpic = pic_irqchip(kvm);
+	bool ret;
+
+	ret = (vpic != NULL);
+	ret |= irqchip_split(kvm);
 
 	/* Read vpic before kvm->irq_routing.  */
 	smp_rmb();
-	return vpic != NULL;
+	return ret;
 }
 
 void kvm_pic_reset(struct kvm_kpic_state *s);
@@ -102,5 +119,8 @@ void __kvm_migrate_pit_timer(struct kvm_vcpu *vcpu);
 void __kvm_migrate_timers(struct kvm_vcpu *vcpu);
 
 int apic_has_pending_timer(struct kvm_vcpu *vcpu);
+
+int kvm_setup_default_irq_routing(struct kvm *kvm);
+int kvm_setup_empty_irq_routing(struct kvm *kvm);
 
 #endif

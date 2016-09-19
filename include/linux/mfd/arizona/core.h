@@ -14,6 +14,7 @@
 #define _WM_ARIZONA_CORE_H
 
 #include <linux/interrupt.h>
+#include <linux/notifier.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mfd/arizona/pdata.h>
@@ -27,6 +28,8 @@ enum arizona_type {
 	WM8280 = 4,
 	WM8998 = 5,
 	WM1814 = 6,
+	WM1831 = 7,
+	CS47L24 = 8,
 };
 
 #define ARIZONA_IRQ_GP1                    0
@@ -146,7 +149,16 @@ struct arizona {
 	uint16_t dac_comp_coeff;
 	uint8_t dac_comp_enabled;
 	struct mutex dac_comp_lock;
+
+	struct blocking_notifier_head notifier;
 };
+
+static inline int arizona_call_notifiers(struct arizona *arizona,
+					 unsigned long event,
+					 void *data)
+{
+	return blocking_notifier_call_chain(&arizona->notifier, event, data);
+}
 
 int arizona_clk32k_enable(struct arizona *arizona);
 int arizona_clk32k_disable(struct arizona *arizona);
@@ -166,6 +178,7 @@ static inline int wm5102_patch(struct arizona *arizona)
 #endif
 
 int wm5110_patch(struct arizona *arizona);
+int cs47l24_patch(struct arizona *arizona);
 int wm8997_patch(struct arizona *arizona);
 int wm8998_patch(struct arizona *arizona);
 

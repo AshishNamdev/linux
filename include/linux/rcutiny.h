@@ -83,7 +83,7 @@ static inline void synchronize_sched_expedited(void)
 }
 
 static inline void kfree_call_rcu(struct rcu_head *head,
-				  void (*func)(struct rcu_head *rcu))
+				  rcu_callback_t func)
 {
 	call_rcu(head, func);
 }
@@ -149,6 +149,22 @@ static inline unsigned long rcu_batches_completed_sched(void)
 	return 0;
 }
 
+/*
+ * Return the number of expedited grace periods completed.
+ */
+static inline unsigned long rcu_exp_batches_completed(void)
+{
+	return 0;
+}
+
+/*
+ * Return the number of expedited sched grace periods completed.
+ */
+static inline unsigned long rcu_exp_batches_completed_sched(void)
+{
+	return 0;
+}
+
 static inline void rcu_force_quiescent_state(void)
 {
 }
@@ -178,6 +194,14 @@ static inline void rcu_idle_exit(void)
 }
 
 static inline void rcu_irq_enter(void)
+{
+}
+
+static inline void rcu_irq_exit_irqson(void)
+{
+}
+
+static inline void rcu_irq_enter_irqson(void)
 {
 }
 
@@ -216,6 +240,14 @@ static inline bool rcu_is_watching(void)
 
 static inline void rcu_all_qs(void)
 {
+	barrier(); /* Avoid RCU read-side critical sections leaking across. */
 }
+
+/* RCUtree hotplug events */
+#define rcutree_prepare_cpu      NULL
+#define rcutree_online_cpu       NULL
+#define rcutree_offline_cpu      NULL
+#define rcutree_dead_cpu         NULL
+#define rcutree_dying_cpu        NULL
 
 #endif /* __LINUX_RCUTINY_H */

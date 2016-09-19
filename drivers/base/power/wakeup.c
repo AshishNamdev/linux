@@ -25,6 +25,9 @@
  */
 bool events_check_enabled __read_mostly;
 
+/* First wakeup IRQ seen by the kernel in the last cycle. */
+unsigned int pm_wakeup_irq __read_mostly;
+
 /* If set and the system is suspending, terminate the suspend. */
 static bool pm_abort_suspend __read_mostly;
 
@@ -91,7 +94,7 @@ struct wakeup_source *wakeup_source_create(const char *name)
 	if (!ws)
 		return NULL;
 
-	wakeup_source_prepare(ws, name ? kstrdup(name, GFP_KERNEL) : NULL);
+	wakeup_source_prepare(ws, name ? kstrdup_const(name, GFP_KERNEL) : NULL);
 	return ws;
 }
 EXPORT_SYMBOL_GPL(wakeup_source_create);
@@ -154,7 +157,7 @@ void wakeup_source_destroy(struct wakeup_source *ws)
 
 	wakeup_source_drop(ws);
 	wakeup_source_record(ws);
-	kfree(ws->name);
+	kfree_const(ws->name);
 	kfree(ws);
 }
 EXPORT_SYMBOL_GPL(wakeup_source_destroy);
@@ -243,6 +246,8 @@ static int device_wakeup_attach(struct device *dev, struct wakeup_source *ws)
 		return -EEXIST;
 	}
 	dev->power.wakeup = ws;
+	if (dev->power.wakeirq)
+		device_wakeup_attach_irq(dev, dev->power.wakeirq);
 	spin_unlock_irq(&dev->power.lock);
 	return 0;
 }
@@ -329,10 +334,9 @@ void device_wakeup_arm_wake_irqs(void)
 	struct wakeup_source *ws;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		if (ws->wakeirq)
-			dev_pm_arm_wake_irq(ws->wakeirq);
-	}
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry)
+		dev_pm_arm_wake_irq(ws->wakeirq);
+
 	rcu_read_unlock();
 }
 
@@ -346,10 +350,9 @@ void device_wakeup_disarm_wake_irqs(void)
 	struct wakeup_source *ws;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(ws, &wakeup_sources, entry) {
-		if (ws->wakeirq)
-			dev_pm_disarm_wake_irq(ws->wakeirq);
-	}
+	list_for_each_entry_rcu(ws, &wakeup_sources, entry)
+		dev_pm_disarm_wake_irq(ws->wakeirq);
+
 	rcu_read_unlock();
 }
 
@@ -385,9 +388,7 @@ int device_wakeup_disable(struct device *dev)
 		return -EINVAL;
 
 	ws = device_wakeup_detach(dev);
-	if (ws)
-		wakeup_source_unregister(ws);
-
+	wakeup_source_unregister(ws);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(device_wakeup_disable);
@@ -868,6 +869,15 @@ EXPORT_SYMBOL_GPL(pm_system_wakeup);
 void pm_wakeup_clear(void)
 {
 	pm_abort_suspend = false;
+	pm_wakeup_irq = 0;
+}
+
+void pm_system_irq_wakeup(unsigned int irq_number)
+{
+	if (pm_wakeup_irq == 0) {
+		pm_wakeup_irq = irq_number;
+		pm_system_wakeup();
+	}
 }
 
 /**

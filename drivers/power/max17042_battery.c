@@ -457,13 +457,16 @@ static inline void max17042_write_model_data(struct max17042_chip *chip,
 }
 
 static inline void max17042_read_model_data(struct max17042_chip *chip,
-					u8 addr, u32 *data, int size)
+					u8 addr, u16 *data, int size)
 {
 	struct regmap *map = chip->regmap;
 	int i;
+	u32 tmp;
 
-	for (i = 0; i < size; i++)
-		regmap_read(map, addr + i, &data[i]);
+	for (i = 0; i < size; i++) {
+		regmap_read(map, addr + i, &tmp);
+		data[i] = (u16)tmp;
+	}
 }
 
 static inline int max17042_model_data_compare(struct max17042_chip *chip,
@@ -486,7 +489,7 @@ static int max17042_init_model(struct max17042_chip *chip)
 {
 	int ret;
 	int table_size = ARRAY_SIZE(chip->pdata->config_data->cell_char_tbl);
-	u32 *temp_data;
+	u16 *temp_data;
 
 	temp_data = kcalloc(table_size, sizeof(*temp_data), GFP_KERNEL);
 	if (!temp_data)
@@ -501,7 +504,7 @@ static int max17042_init_model(struct max17042_chip *chip)
 	ret = max17042_model_data_compare(
 		chip,
 		chip->pdata->config_data->cell_char_tbl,
-		(u16 *)temp_data,
+		temp_data,
 		table_size);
 
 	max10742_lock_model(chip);
@@ -514,7 +517,7 @@ static int max17042_verify_model_lock(struct max17042_chip *chip)
 {
 	int i;
 	int table_size = ARRAY_SIZE(chip->pdata->config_data->cell_char_tbl);
-	u32 *temp_data;
+	u16 *temp_data;
 	int ret = 0;
 
 	temp_data = kcalloc(table_size, sizeof(*temp_data), GFP_KERNEL);
@@ -909,18 +912,21 @@ static int max17042_probe(struct i2c_client *client,
 		regmap_write(chip->regmap, MAX17042_LearnCFG, 0x0007);
 	}
 
-	chip->battery = power_supply_register(&client->dev, max17042_desc,
-						&psy_cfg);
+	chip->battery = devm_power_supply_register(&client->dev, max17042_desc,
+						   &psy_cfg);
 	if (IS_ERR(chip->battery)) {
 		dev_err(&client->dev, "failed: power supply register\n");
 		return PTR_ERR(chip->battery);
 	}
 
 	if (client->irq) {
-		ret = request_threaded_irq(client->irq, NULL,
-					max17042_thread_handler,
-					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-					chip->battery->desc->name, chip);
+		ret = devm_request_threaded_irq(&client->dev, client->irq,
+						NULL,
+						max17042_thread_handler,
+						IRQF_TRIGGER_FALLING |
+						IRQF_ONESHOT,
+						chip->battery->desc->name,
+						chip);
 		if (!ret) {
 			regmap_update_bits(chip->regmap, MAX17042_CONFIG,
 					CONFIG_ALRT_BIT_ENBL,
@@ -941,16 +947,6 @@ static int max17042_probe(struct i2c_client *client,
 		chip->init_complete = 1;
 	}
 
-	return 0;
-}
-
-static int max17042_remove(struct i2c_client *client)
-{
-	struct max17042_chip *chip = i2c_get_clientdata(client);
-
-	if (client->irq)
-		free_irq(client->irq, chip);
-	power_supply_unregister(chip->battery);
 	return 0;
 }
 
@@ -1014,7 +1010,6 @@ static struct i2c_driver max17042_i2c_driver = {
 		.pm	= &max17042_pm_ops,
 	},
 	.probe		= max17042_probe,
-	.remove		= max17042_remove,
 	.id_table	= max17042_id,
 };
 module_i2c_driver(max17042_i2c_driver);

@@ -37,7 +37,7 @@ struct blk_queue_tags;
  *	 used in one scatter-gather request.
  */
 #define SG_NONE 0
-#define SG_ALL	SCSI_MAX_SG_SEGMENTS
+#define SG_ALL	SG_CHUNK_SIZE
 
 #define MODE_UNKNOWN 0x00
 #define MODE_INITIATOR 0x01
@@ -406,11 +406,6 @@ struct scsi_host_template {
 	int tag_alloc_policy;
 
 	/*
-	 * Let the block layer assigns tags to all commands.
-	 */
-	unsigned use_blk_tags:1;
-
-	/*
 	 * Track QUEUE_FULL events and reduce queue depth on demand.
 	 */
 	unsigned track_queue_depth:1;
@@ -500,9 +495,6 @@ struct scsi_host_template {
 	 */
 	unsigned int cmd_size;
 	struct scsi_host_cmd_pool *cmd_pool;
-
-	/* temporary flag to disable blk-mq I/O path */
-	bool disable_blk_mq;
 };
 
 /*
@@ -673,6 +665,9 @@ struct Scsi_Host {
 	unsigned use_blk_mq:1;
 	unsigned use_cmd_list:1;
 
+	/* Host responded with short (<36 bytes) INQUIRY result */
+	unsigned short_inquiry:1;
+
 	/*
 	 * Optional work queue to be utilized by the transport
 	 */
@@ -780,7 +775,8 @@ extern bool scsi_use_blk_mq;
 
 static inline bool shost_use_blk_mq(struct Scsi_Host *shost)
 {
-	return shost->use_blk_mq;
+	return scsi_use_blk_mq;
+
 }
 
 extern int scsi_queue_work(struct Scsi_Host *, struct work_struct *);

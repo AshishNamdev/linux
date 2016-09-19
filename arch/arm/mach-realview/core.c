@@ -36,8 +36,7 @@
 #include <linux/memblock.h>
 
 #include <clocksource/timer-sp804.h>
-
-#include <mach/hardware.h>
+#include "hardware.h"
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 #include <asm/hardware/icst.h>
@@ -46,8 +45,7 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/map.h>
 
-#include <mach/platform.h>
-#include <mach/irqs.h>
+#include "platform.h"
 
 #include <plat/sched_clock.h>
 
@@ -95,7 +93,8 @@ static struct smsc911x_platform_config smsc911x_config = {
 };
 
 static struct smc91x_platdata smc91x_platdata = {
-	.flags = SMC91X_USE_32BIT | SMC91X_NOWAIT,
+	.flags = SMC91X_USE_8BIT | SMC91X_USE_16BIT | SMC91X_USE_32BIT |
+		 SMC91X_NOWAIT,
 };
 
 static struct platform_device realview_eth_device = {

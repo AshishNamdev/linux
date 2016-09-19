@@ -34,37 +34,6 @@ struct pci_host_bridge;
 struct machdep_calls {
 	char		*name;
 #ifdef CONFIG_PPC64
-	void            (*hpte_invalidate)(unsigned long slot,
-					   unsigned long vpn,
-					   int bpsize, int apsize,
-					   int ssize, int local);
-	long		(*hpte_updatepp)(unsigned long slot, 
-					 unsigned long newpp, 
-					 unsigned long vpn,
-					 int bpsize, int apsize,
-					 int ssize, unsigned long flags);
-	void            (*hpte_updateboltedpp)(unsigned long newpp, 
-					       unsigned long ea,
-					       int psize, int ssize);
-	long		(*hpte_insert)(unsigned long hpte_group,
-				       unsigned long vpn,
-				       unsigned long prpn,
-				       unsigned long rflags,
-				       unsigned long vflags,
-				       int psize, int apsize,
-				       int ssize);
-	long		(*hpte_remove)(unsigned long hpte_group);
-	void            (*hpte_removebolted)(unsigned long ea,
-					     int psize, int ssize);
-	void		(*flush_hash_range)(unsigned long number, int local);
-	void		(*hugepage_invalidate)(unsigned long vsid,
-					       unsigned long addr,
-					       unsigned char *hpte_slot_array,
-					       int psize, int ssize, int local);
-	/* special for kexec, to be called in real mode, linear mapping is
-	 * destroyed as well */
-	void		(*hpte_clear_all)(void);
-
 	void __iomem *	(*ioremap)(phys_addr_t addr, unsigned long size,
 				   unsigned long flags, void *caller);
 	void		(*iounmap)(volatile void __iomem *token);
@@ -84,7 +53,6 @@ struct machdep_calls {
 
 	int		(*probe)(void);
 	void		(*setup_arch)(void); /* Optional, may be NULL */
-	void		(*init_early)(void);
 	/* Optional, may be NULL. */
 	void		(*show_cpuinfo)(struct seq_file *m);
 	void		(*show_percpuinfo)(struct seq_file *m, int i);
@@ -106,8 +74,8 @@ struct machdep_calls {
 	/* To setup PHBs when using automatic OF platform driver for PCI */
 	int		(*pci_setup_phb)(struct pci_controller *host);
 
-	void		(*restart)(char *cmd);
-	void		(*halt)(void);
+	void __noreturn	(*restart)(char *cmd);
+	void __noreturn (*halt)(void);
 	void		(*panic)(char *str);
 	void		(*cpu_die)(void);
 
@@ -169,11 +137,11 @@ struct machdep_calls {
 	   platform, called once per cpu. */
 	void		(*enable_pmcs)(void);
 
-	/* Set DABR for this platform, leave empty for default implemenation */
+	/* Set DABR for this platform, leave empty for default implementation */
 	int		(*set_dabr)(unsigned long dabr,
 				    unsigned long dabrx);
 
-	/* Set DAWR for this platform, leave empty for default implemenation */
+	/* Set DAWR for this platform, leave empty for default implementation */
 	int		(*set_dawr)(unsigned long dawr,
 				    unsigned long dawrx);
 

@@ -45,6 +45,14 @@ struct skl_ipc_header {
 	u32 extension;
 };
 
+#define SKL_DSP_CORES_MAX  2
+
+struct skl_dsp_cores {
+	unsigned int count;
+	enum skl_dsp_states state[SKL_DSP_CORES_MAX];
+	int usage_count[SKL_DSP_CORES_MAX];
+};
+
 struct skl_sst {
 	struct device *dev;
 	struct sst_dsp *dsp;
@@ -55,6 +63,20 @@ struct skl_sst {
 
 	/* IPC messaging */
 	struct sst_generic_ipc ipc;
+
+	/* callback for miscbdge */
+	void (*enable_miscbdcge)(struct device *dev, bool enable);
+	/*Is CGCTL.MISCBDCGE disabled*/
+	bool miscbdcg_disabled;
+
+	/* Populate module information */
+	struct list_head uuid_list;
+
+	/* Is firmware loaded */
+	bool fw_loaded;
+
+	/* multi-core */
+	struct skl_dsp_cores cores;
 };
 
 struct skl_ipc_init_instance_msg {
@@ -108,18 +130,29 @@ int skl_ipc_init_instance(struct sst_generic_ipc *sst_ipc,
 int skl_ipc_bind_unbind(struct sst_generic_ipc *sst_ipc,
 		struct skl_ipc_bind_unbind_msg *msg);
 
+int skl_ipc_load_modules(struct sst_generic_ipc *ipc,
+				u8 module_cnt, void *data);
+
+int skl_ipc_unload_modules(struct sst_generic_ipc *ipc,
+				u8 module_cnt, void *data);
+
 int skl_ipc_set_dx(struct sst_generic_ipc *ipc,
 		u8 instance_id, u16 module_id, struct skl_ipc_dxstate_info *dx);
 
 int skl_ipc_set_large_config(struct sst_generic_ipc *ipc,
 		struct skl_ipc_large_config_msg *msg, u32 *param);
 
+int skl_ipc_get_large_config(struct sst_generic_ipc *ipc,
+		struct skl_ipc_large_config_msg *msg, u32 *param);
+
 void skl_ipc_int_enable(struct sst_dsp *dsp);
 void skl_ipc_op_int_enable(struct sst_dsp *ctx);
+void skl_ipc_op_int_disable(struct sst_dsp *ctx);
 void skl_ipc_int_disable(struct sst_dsp *dsp);
 
 bool skl_ipc_int_status(struct sst_dsp *dsp);
 void skl_ipc_free(struct sst_generic_ipc *ipc);
 int skl_ipc_init(struct device *dev, struct skl_sst *skl);
+void skl_clear_module_cnt(struct sst_dsp *ctx);
 
 #endif /* __SKL_IPC_H */

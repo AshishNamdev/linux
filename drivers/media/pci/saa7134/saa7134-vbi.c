@@ -83,7 +83,7 @@ static int buffer_activate(struct saa7134_dev *dev,
 			   struct saa7134_buf *buf,
 			   struct saa7134_buf *next)
 {
-	struct saa7134_dmaqueue *dmaq = buf->vb2.vb2_queue->drv_priv;
+	struct saa7134_dmaqueue *dmaq = buf->vb2.vb2_buf.vb2_queue->drv_priv;
 	unsigned long control, base;
 
 	vbi_dbg("buffer_activate [%p]\n", buf);
@@ -119,8 +119,9 @@ static int buffer_prepare(struct vb2_buffer *vb2)
 {
 	struct saa7134_dmaqueue *dmaq = vb2->vb2_queue->drv_priv;
 	struct saa7134_dev *dev = dmaq->dev;
-	struct saa7134_buf *buf = container_of(vb2, struct saa7134_buf, vb2);
-	struct sg_table *dma = vb2_dma_sg_plane_desc(&buf->vb2, 0);
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb2);
+	struct saa7134_buf *buf = container_of(vbuf, struct saa7134_buf, vb2);
+	struct sg_table *dma = vb2_dma_sg_plane_desc(vb2, 0);
 	unsigned int size;
 
 	if (dma->sgl->offset) {
@@ -137,9 +138,9 @@ static int buffer_prepare(struct vb2_buffer *vb2)
 				    saa7134_buffer_startpage(buf));
 }
 
-static int queue_setup(struct vb2_queue *q, const struct v4l2_format *fmt,
+static int queue_setup(struct vb2_queue *q,
 			   unsigned int *nbuffers, unsigned int *nplanes,
-			   unsigned int sizes[], void *alloc_ctxs[])
+			   unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct saa7134_dmaqueue *dmaq = q->drv_priv;
 	struct saa7134_dev *dev = dmaq->dev;
@@ -154,14 +155,14 @@ static int queue_setup(struct vb2_queue *q, const struct v4l2_format *fmt,
 	*nbuffers = saa7134_buffer_count(size, *nbuffers);
 	*nplanes = 1;
 	sizes[0] = size;
-	alloc_ctxs[0] = dev->alloc_ctx;
 	return 0;
 }
 
 static int buffer_init(struct vb2_buffer *vb2)
 {
 	struct saa7134_dmaqueue *dmaq = vb2->vb2_queue->drv_priv;
-	struct saa7134_buf *buf = container_of(vb2, struct saa7134_buf, vb2);
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb2);
+	struct saa7134_buf *buf = container_of(vbuf, struct saa7134_buf, vb2);
 
 	dmaq->curr = NULL;
 	buf->activate = buffer_activate;

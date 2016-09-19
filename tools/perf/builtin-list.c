@@ -14,7 +14,7 @@
 #include "util/parse-events.h"
 #include "util/cache.h"
 #include "util/pmu.h"
-#include "util/parse-options.h"
+#include <subcmd/parse-options.h>
 
 int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 {
@@ -25,7 +25,7 @@ int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 		OPT_END()
 	};
 	const char * const list_usage[] = {
-		"perf list [hw|sw|cache|tracepoint|pmu|event_glob]",
+		"perf list [hw|sw|cache|tracepoint|pmu|sdt|event_glob]",
 		NULL
 	};
 
@@ -36,7 +36,7 @@ int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 
 	setup_pager();
 
-	if (!raw_dump)
+	if (!raw_dump && pager_in_use())
 		printf("\nList of pre-defined events (to be used in -e):\n\n");
 
 	if (argc == 0) {
@@ -45,6 +45,8 @@ int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 	}
 
 	for (i = 0; i < argc; ++i) {
+		char *sep, *s;
+
 		if (strcmp(argv[i], "tracepoint") == 0)
 			print_tracepoint_events(NULL, NULL, raw_dump);
 		else if (strcmp(argv[i], "hw") == 0 ||
@@ -60,8 +62,9 @@ int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 			print_hwcache_events(NULL, raw_dump);
 		else if (strcmp(argv[i], "pmu") == 0)
 			print_pmu_events(NULL, raw_dump);
-		else {
-			char *sep = strchr(argv[i], ':'), *s;
+		else if (strcmp(argv[i], "sdt") == 0)
+			print_sdt_events(NULL, NULL, raw_dump);
+		else if ((sep = strchr(argv[i], ':')) != NULL) {
 			int sep_idx;
 
 			if (sep == NULL) {
@@ -75,6 +78,21 @@ int cmd_list(int argc, const char **argv, const char *prefix __maybe_unused)
 
 			s[sep_idx] = '\0';
 			print_tracepoint_events(s, s + sep_idx + 1, raw_dump);
+			print_sdt_events(s, s + sep_idx + 1, raw_dump);
+			free(s);
+		} else {
+			if (asprintf(&s, "*%s*", argv[i]) < 0) {
+				printf("Critical: Not enough memory! Trying to continue...\n");
+				continue;
+			}
+			print_symbol_events(s, PERF_TYPE_HARDWARE,
+					    event_symbols_hw, PERF_COUNT_HW_MAX, raw_dump);
+			print_symbol_events(s, PERF_TYPE_SOFTWARE,
+					    event_symbols_sw, PERF_COUNT_SW_MAX, raw_dump);
+			print_hwcache_events(s, raw_dump);
+			print_pmu_events(s, raw_dump);
+			print_tracepoint_events(NULL, s, raw_dump);
+			print_sdt_events(NULL, s, raw_dump);
 			free(s);
 		}
 	}

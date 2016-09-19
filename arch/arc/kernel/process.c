@@ -44,11 +44,10 @@ SYSCALL_DEFINE0(arc_gettls)
 void arch_cpu_idle(void)
 {
 	/* sleep, but enable all interrupts before committing */
-	if (is_isa_arcompact()) {
-		__asm__("sleep 0x3");
-	} else {
-		__asm__("sleep 0x10");
-	}
+	__asm__ __volatile__(
+		"sleep %0	\n"
+		:
+		:"I"(ISA_SLEEP_ARG)); /* can't be "r" has to be embedded const */
 }
 
 asmlinkage void ret_from_fork(void);
@@ -184,13 +183,6 @@ void flush_thread(void)
 {
 }
 
-/*
- * Free any architecture-specific thread data structures, etc.
- */
-void exit_thread(void)
-{
-}
-
 int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 {
 	return 0;
@@ -207,7 +199,7 @@ int elf_check_arch(const struct elf32_hdr *x)
 	}
 
 	eflags = x->e_flags;
-	if ((eflags & EF_ARC_OSABI_MSK) < EF_ARC_OSABI_CURRENT) {
+	if ((eflags & EF_ARC_OSABI_MSK) != EF_ARC_OSABI_CURRENT) {
 		pr_err("ABI mismatch - you need newer toolchain\n");
 		force_sigsegv(SIGSEGV, current);
 		return 0;

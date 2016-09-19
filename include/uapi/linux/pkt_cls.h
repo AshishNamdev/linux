@@ -66,6 +66,7 @@ enum {
 	TCA_ACT_OPTIONS,
 	TCA_ACT_INDEX,
 	TCA_ACT_STATS,
+	TCA_ACT_PAD,
 	__TCA_ACT_MAX
 };
 
@@ -87,6 +88,7 @@ enum {
 #define TC_ACT_STOLEN		4
 #define TC_ACT_QUEUED		5
 #define TC_ACT_REPEAT		6
+#define TC_ACT_REDIRECT		7
 #define TC_ACT_JUMP		0x10000000
 
 /* Action type identifiers*/
@@ -113,8 +115,8 @@ struct tc_police {
 	__u32			mtu;
 	struct tc_ratespec	rate;
 	struct tc_ratespec	peakrate;
-	int 			refcnt;
-	int 			bindcnt;
+	int			refcnt;
+	int			bindcnt;
 	__u32			capab;
 };
 
@@ -122,10 +124,11 @@ struct tcf_t {
 	__u64   install;
 	__u64   lastuse;
 	__u64   expires;
+	__u64   firstuse;
 };
 
 struct tc_cnt {
-	int                   refcnt; 
+	int                   refcnt;
 	int                   bindcnt;
 };
 
@@ -143,11 +146,17 @@ enum {
 	TCA_POLICE_PEAKRATE,
 	TCA_POLICE_AVRATE,
 	TCA_POLICE_RESULT,
+	TCA_POLICE_TM,
+	TCA_POLICE_PAD,
 	__TCA_POLICE_MAX
 #define TCA_POLICE_RESULT TCA_POLICE_RESULT
 };
 
 #define TCA_POLICE_MAX (__TCA_POLICE_MAX - 1)
+
+/* tca flags definitions */
+#define TCA_CLS_FLAGS_SKIP_HW	(1 << 0)
+#define TCA_CLS_FLAGS_SKIP_SW	(1 << 1)
 
 /* U32 filters */
 
@@ -167,10 +176,12 @@ enum {
 	TCA_U32_DIVISOR,
 	TCA_U32_SEL,
 	TCA_U32_POLICE,
-	TCA_U32_ACT,   
+	TCA_U32_ACT,
 	TCA_U32_INDEV,
 	TCA_U32_PCNT,
 	TCA_U32_MARK,
+	TCA_U32_FLAGS,
+	TCA_U32_PAD,
 	__TCA_U32_MAX
 };
 
@@ -373,6 +384,8 @@ enum {
 
 /* BPF classifier */
 
+#define TCA_BPF_FLAG_ACT_DIRECT		(1 << 0)
+
 enum {
 	TCA_BPF_UNSPEC,
 	TCA_BPF_ACT,
@@ -382,6 +395,7 @@ enum {
 	TCA_BPF_OPS,
 	TCA_BPF_FD,
 	TCA_BPF_NAME,
+	TCA_BPF_FLAGS,
 	__TCA_BPF_MAX,
 };
 
@@ -412,10 +426,24 @@ enum {
 	TCA_FLOWER_KEY_TCP_DST,		/* be16 */
 	TCA_FLOWER_KEY_UDP_SRC,		/* be16 */
 	TCA_FLOWER_KEY_UDP_DST,		/* be16 */
+
+	TCA_FLOWER_FLAGS,
 	__TCA_FLOWER_MAX,
 };
 
 #define TCA_FLOWER_MAX (__TCA_FLOWER_MAX - 1)
+
+/* Match-all classifier */
+
+enum {
+	TCA_MATCHALL_UNSPEC,
+	TCA_MATCHALL_CLASSID,
+	TCA_MATCHALL_ACT,
+	TCA_MATCHALL_FLAGS,
+	__TCA_MATCHALL_MAX,
+};
+
+#define TCA_MATCHALL_MAX (__TCA_MATCHALL_MAX - 1)
 
 /* Extended Matches */
 

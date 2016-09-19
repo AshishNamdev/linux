@@ -30,10 +30,10 @@
 #include <media/tuner.h>
 #include <media/tveeprom.h>
 #include <media/videobuf2-dma-sg.h>
-#include <media/cx2341x.h>
+#include <media/drv-intf/cx2341x.h>
 #include <media/videobuf2-dvb.h>
-#include <media/ir-kbd-i2c.h>
-#include <media/wm8775.h>
+#include <media/i2c/ir-kbd-i2c.h>
+#include <media/i2c/wm8775.h>
 
 #include "cx88-reg.h"
 #include "tuner-xc2028.h"
@@ -321,7 +321,7 @@ struct cx88_riscmem {
 /* buffer for one video frame */
 struct cx88_buffer {
 	/* common v4l buffer stuff -- must be first */
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head       list;
 
 	/* cx88 specific */
@@ -485,7 +485,6 @@ struct cx8800_dev {
 	/* pci i/o */
 	struct pci_dev             *pci;
 	unsigned char              pci_rev,pci_lat;
-	void			   *alloc_ctx;
 
 	const struct cx8800_fmt    *fmt;
 
@@ -549,7 +548,6 @@ struct cx8802_dev {
 	/* pci i/o */
 	struct pci_dev             *pci;
 	unsigned char              pci_rev,pci_lat;
-	void			   *alloc_ctx;
 
 	/* dma queues */
 	struct cx88_dmaqueue       mpegq;

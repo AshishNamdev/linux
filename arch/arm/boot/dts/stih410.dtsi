@@ -22,6 +22,8 @@
 			resets = <&softreset STIH407_PICOPHY_SOFTRESET>,
 				 <&picophyreset STIH407_PICOPHY0_RESET>;
 			reset-names = "global", "port";
+
+			status = "disabled";
 		};
 
 		usb2_picophy2: phy3 {
@@ -31,18 +33,23 @@
 			resets = <&softreset STIH407_PICOPHY_SOFTRESET>,
 				 <&picophyreset STIH407_PICOPHY1_RESET>;
 			reset-names = "global", "port";
+
+			status = "disabled";
 		};
 
 		ohci0: usb@9a03c00 {
 			compatible = "st,st-ohci-300x";
 			reg = <0x9a03c00 0x100>;
 			interrupts = <GIC_SPI 180 IRQ_TYPE_NONE>;
-			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>;
+			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>,
+				 <&clk_s_c0_flexgen CLK_RX_ICN_DISP_0>;
 			resets = <&powerdown STIH407_USB2_PORT0_POWERDOWN>,
 				 <&softreset STIH407_USB2_PORT0_SOFTRESET>;
 			reset-names = "power", "softreset";
 			phys = <&usb2_picophy1>;
 			phy-names = "usb";
+
+			status = "disabled";
 		};
 
 		ehci0: usb@9a03e00 {
@@ -51,24 +58,30 @@
 			interrupts = <GIC_SPI 151 IRQ_TYPE_NONE>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&pinctrl_usb0>;
-			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>;
+			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>,
+				 <&clk_s_c0_flexgen CLK_RX_ICN_DISP_0>;
 			resets = <&powerdown STIH407_USB2_PORT0_POWERDOWN>,
 				 <&softreset STIH407_USB2_PORT0_SOFTRESET>;
 			reset-names = "power", "softreset";
 			phys = <&usb2_picophy1>;
 			phy-names = "usb";
+
+			status = "disabled";
 		};
 
 		ohci1: usb@9a83c00 {
 			compatible = "st,st-ohci-300x";
 			reg = <0x9a83c00 0x100>;
 			interrupts = <GIC_SPI 181 IRQ_TYPE_NONE>;
-			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>;
+			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>,
+				 <&clk_s_c0_flexgen CLK_RX_ICN_DISP_0>;
 			resets = <&powerdown STIH407_USB2_PORT1_POWERDOWN>,
 				 <&softreset STIH407_USB2_PORT1_SOFTRESET>;
 			reset-names = "power", "softreset";
 			phys = <&usb2_picophy2>;
 			phy-names = "usb";
+
+			status = "disabled";
 		};
 
 		ehci1: usb@9a83e00 {
@@ -77,25 +90,15 @@
 			interrupts = <GIC_SPI 153 IRQ_TYPE_NONE>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&pinctrl_usb1>;
-			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>;
+			clocks = <&clk_s_c0_flexgen CLK_TX_ICN_DISP_0>,
+				 <&clk_s_c0_flexgen CLK_RX_ICN_DISP_0>;
 			resets = <&powerdown STIH407_USB2_PORT1_POWERDOWN>,
 				 <&softreset STIH407_USB2_PORT1_SOFTRESET>;
 			reset-names = "power", "softreset";
 			phys = <&usb2_picophy2>;
 			phy-names = "usb";
-		};
 
-		/* Display */
-		vtg_main: sti-vtg-main@8d02800 {
-			compatible = "st,vtg";
-			reg = <0x8d02800 0x200>;
-			interrupts = <GIC_SPI 108 IRQ_TYPE_NONE>;
-		};
-
-		vtg_aux: sti-vtg-aux@8d00200 {
-			compatible = "st,vtg";
-			reg = <0x8d00200 0x100>;
-			interrupts = <GIC_SPI 109 IRQ_TYPE_NONE>;
+			status = "disabled";
 		};
 
 		sti-display-subsystem {

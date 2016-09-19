@@ -121,6 +121,9 @@ struct net {
 #if IS_ENABLED(CONFIG_NETFILTER_NETLINK_ACCT)
 	struct list_head        nfnl_acct_list;
 #endif
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+	struct list_head	nfct_timeout_list;
+#endif
 #endif
 #ifdef CONFIG_WEXT_CORE
 	struct sk_buff_head	wext_nlevents;
@@ -272,7 +275,7 @@ static inline struct net *read_pnet(const possible_net_t *pnet)
 #define __net_initconst
 #else
 #define __net_init	__init
-#define __net_exit	__exit_refok
+#define __net_exit	__ref
 #define __net_initdata	__initdata
 #define __net_initconst	__initconst
 #endif

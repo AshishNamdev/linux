@@ -388,6 +388,8 @@ static int davinci_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	u8 day0, day1;
 	unsigned long flags;
 
+	alm->time.tm_sec = 0;
+
 	spin_lock_irqsave(&davinci_rtc_lock, flags);
 
 	davinci_rtcss_calendar_wait(davinci_rtc);
@@ -546,7 +548,6 @@ static int __exit davinci_rtc_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver davinci_rtc_driver = {
-	.probe		= davinci_rtc_probe,
 	.remove		= __exit_p(davinci_rtc_remove),
 	.driver		= {
 		.name = "rtc_davinci",

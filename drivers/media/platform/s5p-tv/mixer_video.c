@@ -80,12 +80,7 @@ int mxr_acquire_video(struct mxr_device *mdev,
 		goto fail;
 	}
 
-	mdev->alloc_ctx = vb2_dma_contig_init_ctx(mdev->dev);
-	if (IS_ERR(mdev->alloc_ctx)) {
-		mxr_err(mdev, "could not acquire vb2 allocator\n");
-		ret = PTR_ERR(mdev->alloc_ctx);
-		goto fail_v4l2_dev;
-	}
+	vb2_dma_contig_set_max_seg_size(mdev->dev, DMA_BIT_MASK(32));
 
 	/* registering outputs */
 	mdev->output_cnt = 0;
@@ -120,7 +115,7 @@ int mxr_acquire_video(struct mxr_device *mdev,
 		mxr_err(mdev, "failed to register any output\n");
 		ret = -ENODEV;
 		/* skipping fail_output because there is nothing to free */
-		goto fail_vb2_allocator;
+		goto fail_v4l2_dev;
 	}
 
 	return 0;
@@ -130,10 +125,6 @@ fail_output:
 	for (i = 0; i < mdev->output_cnt; ++i)
 		kfree(mdev->output[i]);
 	memset(mdev->output, 0, sizeof(mdev->output));
-
-fail_vb2_allocator:
-	/* freeing allocator context */
-	vb2_dma_contig_cleanup_ctx(mdev->alloc_ctx);
 
 fail_v4l2_dev:
 	/* NOTE: automatically unregister all subdevs */
@@ -151,7 +142,7 @@ void mxr_release_video(struct mxr_device *mdev)
 	for (i = 0; i < mdev->output_cnt; ++i)
 		kfree(mdev->output[i]);
 
-	vb2_dma_contig_cleanup_ctx(mdev->alloc_ctx);
+	vb2_dma_contig_clear_max_seg_size(mdev->dev);
 	v4l2_device_unregister(&mdev->v4l2_dev);
 }
 
@@ -881,9 +872,9 @@ static const struct v4l2_file_operations mxr_fops = {
 	.unlocked_ioctl = video_ioctl2,
 };
 
-static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *pfmt,
+static int queue_setup(struct vb2_queue *vq,
 	unsigned int *nbuffers, unsigned int *nplanes, unsigned int sizes[],
-	void *alloc_ctxs[])
+	struct device *alloc_devs[])
 {
 	struct mxr_layer *layer = vb2_get_drv_priv(vq);
 	const struct mxr_format *fmt = layer->fmt;
@@ -901,7 +892,6 @@ static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *pfmt,
 
 	*nplanes = fmt->num_subframes;
 	for (i = 0; i < fmt->num_subframes; ++i) {
-		alloc_ctxs[i] = layer->mdev->alloc_ctx;
 		sizes[i] = planes[i].sizeimage;
 		mxr_dbg(mdev, "size[%d] = %08x\n", i, sizes[i]);
 	}
@@ -914,7 +904,8 @@ static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *pfmt,
 
 static void buf_queue(struct vb2_buffer *vb)
 {
-	struct mxr_buffer *buffer = container_of(vb, struct mxr_buffer, vb);
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	struct mxr_buffer *buffer = container_of(vbuf, struct mxr_buffer, vb);
 	struct mxr_layer *layer = vb2_get_drv_priv(vb->vb2_queue);
 	struct mxr_device *mdev = layer->mdev;
 	unsigned long flags;
@@ -963,11 +954,13 @@ static void mxr_watchdog(unsigned long arg)
 	if (layer->update_buf == layer->shadow_buf)
 		layer->update_buf = NULL;
 	if (layer->update_buf) {
-		vb2_buffer_done(&layer->update_buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&layer->update_buf->vb.vb2_buf,
+				VB2_BUF_STATE_ERROR);
 		layer->update_buf = NULL;
 	}
 	if (layer->shadow_buf) {
-		vb2_buffer_done(&layer->shadow_buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&layer->shadow_buf->vb.vb2_buf,
+				VB2_BUF_STATE_ERROR);
 		layer->shadow_buf = NULL;
 	}
 	spin_unlock_irqrestore(&layer->enq_slock, flags);
@@ -991,7 +984,7 @@ static void stop_streaming(struct vb2_queue *vq)
 	/* set all buffer to be done */
 	list_for_each_entry_safe(buf, buf_tmp, &layer->enq_list, list) {
 		list_del(&buf->list);
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 	}
 
 	spin_unlock_irqrestore(&layer->enq_slock, flags);
@@ -1067,7 +1060,7 @@ static void mxr_vfd_release(struct video_device *vdev)
 }
 
 struct mxr_layer *mxr_base_layer_create(struct mxr_device *mdev,
-	int idx, char *name, struct mxr_layer_ops *ops)
+	int idx, char *name, const struct mxr_layer_ops *ops)
 {
 	struct mxr_layer *layer;
 
@@ -1107,6 +1100,7 @@ struct mxr_layer *mxr_base_layer_create(struct mxr_device *mdev,
 		.min_buffers_needed = 1,
 		.mem_ops = &vb2_dma_contig_memops,
 		.lock = &layer->mutex,
+		.dev = mdev->dev,
 	};
 
 	return layer;

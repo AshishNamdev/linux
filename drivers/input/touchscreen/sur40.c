@@ -38,6 +38,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-ioctl.h>
+#include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-sg.h>
 
 /* read 512 bytes from endpoint 0x86 -> get header + blobs */
@@ -125,7 +126,7 @@ struct sur40_image_header {
 #define VIDEO_PACKET_SIZE  16384
 
 /* polling interval (ms) */
-#define POLL_INTERVAL 4
+#define POLL_INTERVAL 1
 
 /* maximum number of contacts FIXME: this is a guess? */
 #define MAX_CONTACTS 64
@@ -150,7 +151,6 @@ struct sur40_state {
 	struct mutex lock;
 
 	struct vb2_queue queue;
-	struct vb2_alloc_ctx *alloc_ctx;
 	struct list_head buf_list;
 	spinlock_t qlock;
 	int sequence;
@@ -163,7 +163,7 @@ struct sur40_state {
 };
 
 struct sur40_buffer {
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head list;
 };
 
@@ -196,28 +196,34 @@ static int sur40_command(struct sur40_state *dev,
 static int sur40_init(struct sur40_state *dev)
 {
 	int result;
-	u8 buffer[24];
+	u8 *buffer;
+
+	buffer = kmalloc(24, GFP_KERNEL);
+	if (!buffer) {
+		result = -ENOMEM;
+		goto error;
+	}
 
 	/* stupidly replay the original MS driver init sequence */
 	result = sur40_command(dev, SUR40_GET_VERSION, 0x00, buffer, 12);
 	if (result < 0)
-		return result;
+		goto error;
 
 	result = sur40_command(dev, SUR40_GET_VERSION, 0x01, buffer, 12);
 	if (result < 0)
-		return result;
+		goto error;
 
 	result = sur40_command(dev, SUR40_GET_VERSION, 0x02, buffer, 12);
 	if (result < 0)
-		return result;
+		goto error;
 
 	result = sur40_command(dev, SUR40_UNKNOWN2,    0x00, buffer, 24);
 	if (result < 0)
-		return result;
+		goto error;
 
 	result = sur40_command(dev, SUR40_UNKNOWN1,    0x00, buffer,  5);
 	if (result < 0)
-		return result;
+		goto error;
 
 	result = sur40_command(dev, SUR40_GET_VERSION, 0x03, buffer, 12);
 
@@ -225,7 +231,8 @@ static int sur40_init(struct sur40_state *dev)
 	 * Discard the result buffer - no known data inside except
 	 * some version strings, maybe extract these sometime...
 	 */
-
+error:
+	kfree(buffer);
 	return result;
 }
 
@@ -420,7 +427,7 @@ static void sur40_process_video(struct sur40_state *sur40)
 
 	dev_dbg(sur40->dev, "header acquired\n");
 
-	sgt = vb2_dma_sg_plane_desc(&new_buf->vb, 0);
+	sgt = vb2_dma_sg_plane_desc(&new_buf->vb.vb2_buf, 0);
 
 	result = usb_sg_init(&sgr, sur40->usbdev,
 		usb_rcvbulkpipe(sur40->usbdev, VIDEO_ENDPOINT), 0,
@@ -440,18 +447,18 @@ static void sur40_process_video(struct sur40_state *sur40)
 
 	/* return error if streaming was stopped in the meantime */
 	if (sur40->sequence == -1)
-		goto err_poll;
+		return;
 
 	/* mark as finished */
-	v4l2_get_timestamp(&new_buf->vb.v4l2_buf.timestamp);
-	new_buf->vb.v4l2_buf.sequence = sur40->sequence++;
-	new_buf->vb.v4l2_buf.field = V4L2_FIELD_NONE;
-	vb2_buffer_done(&new_buf->vb, VB2_BUF_STATE_DONE);
+	new_buf->vb.vb2_buf.timestamp = ktime_get_ns();
+	new_buf->vb.sequence = sur40->sequence++;
+	new_buf->vb.field = V4L2_FIELD_NONE;
+	vb2_buffer_done(&new_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	dev_dbg(sur40->dev, "buffer marked done\n");
 	return;
 
 err_poll:
-	vb2_buffer_done(&new_buf->vb, VB2_BUF_STATE_ERROR);
+	vb2_buffer_done(&new_buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 }
 
 /* Initialize input device parameters. */
@@ -572,18 +579,12 @@ static int sur40_probe(struct usb_interface *interface,
 	sur40->queue = sur40_queue;
 	sur40->queue.drv_priv = sur40;
 	sur40->queue.lock = &sur40->lock;
+	sur40->queue.dev = sur40->dev;
 
 	/* initialize the queue */
 	error = vb2_queue_init(&sur40->queue);
 	if (error)
 		goto err_unreg_v4l2;
-
-	sur40->alloc_ctx = vb2_dma_sg_init_ctx(sur40->dev);
-	if (IS_ERR(sur40->alloc_ctx)) {
-		dev_err(sur40->dev, "Can't allocate buffer context");
-		error = PTR_ERR(sur40->alloc_ctx);
-		goto err_unreg_v4l2;
-	}
 
 	sur40->vdev = sur40_video_device;
 	sur40->vdev.v4l2_dev = &sur40->v4l2;
@@ -625,7 +626,6 @@ static void sur40_disconnect(struct usb_interface *interface)
 
 	video_unregister_device(&sur40->vdev);
 	v4l2_device_unregister(&sur40->v4l2);
-	vb2_dma_sg_cleanup_ctx(sur40->alloc_ctx);
 
 	input_unregister_polled_device(sur40->input);
 	input_free_polled_device(sur40->input);
@@ -643,21 +643,18 @@ static void sur40_disconnect(struct usb_interface *interface)
  * minimum number: many DMA engines need a minimum of 2 buffers in the
  * queue and you need to have another available for userspace processing.
  */
-static int sur40_queue_setup(struct vb2_queue *q, const struct v4l2_format *fmt,
+static int sur40_queue_setup(struct vb2_queue *q,
 		       unsigned int *nbuffers, unsigned int *nplanes,
-		       unsigned int sizes[], void *alloc_ctxs[])
+		       unsigned int sizes[], struct device *alloc_devs[])
 {
-	struct sur40_state *sur40 = vb2_get_drv_priv(q);
-
 	if (q->num_buffers + *nbuffers < 3)
 		*nbuffers = 3 - q->num_buffers;
 
-	if (fmt && fmt->fmt.pix.sizeimage < sur40_video_format.sizeimage)
-		return -EINVAL;
+	if (*nplanes)
+		return sizes[0] < sur40_video_format.sizeimage ? -EINVAL : 0;
 
 	*nplanes = 1;
-	sizes[0] = fmt ? fmt->fmt.pix.sizeimage : sur40_video_format.sizeimage;
-	alloc_ctxs[0] = sur40->alloc_ctx;
+	sizes[0] = sur40_video_format.sizeimage;
 
 	return 0;
 }
@@ -701,7 +698,7 @@ static void return_all_buffers(struct sur40_state *sur40,
 
 	spin_lock(&sur40->qlock);
 	list_for_each_entry_safe(buf, node, &sur40->buf_list, list) {
-		vb2_buffer_done(&buf->vb, state);
+		vb2_buffer_done(&buf->vb.vb2_buf, state);
 		list_del(&buf->list);
 	}
 	spin_unlock(&sur40->qlock);
@@ -728,6 +725,7 @@ static int sur40_start_streaming(struct vb2_queue *vq, unsigned int count)
 static void sur40_stop_streaming(struct vb2_queue *vq)
 {
 	struct sur40_state *sur40 = vb2_get_drv_priv(vq);
+	vb2_wait_for_all_buffers(vq);
 	sur40->sequence = -1;
 
 	/* Release all active buffers */
@@ -785,7 +783,6 @@ static int sur40_vidioc_enum_fmt(struct file *file, void *priv,
 {
 	if (f->index != 0)
 		return -EINVAL;
-	strlcpy(f->description, "8-bit greyscale", sizeof(f->description));
 	f->pixelformat = V4L2_PIX_FMT_GREY;
 	f->flags = 0;
 	return 0;

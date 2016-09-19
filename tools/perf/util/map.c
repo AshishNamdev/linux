@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "machine.h"
 #include <linux/string.h>
+#include "unwind.h"
 
 static void __maps__insert(struct maps *maps, struct map *map);
 
@@ -26,8 +27,8 @@ const char *map_type__name[MAP__NR_TYPES] = {
 static inline int is_anon_memory(const char *filename)
 {
 	return !strcmp(filename, "//anon") ||
-	       !strcmp(filename, "/dev/zero (deleted)") ||
-	       !strcmp(filename, "/anon_hugepage (deleted)");
+	       !strncmp(filename, "/dev/zero", sizeof("/dev/zero") - 1) ||
+	       !strncmp(filename, "/anon_hugepage", sizeof("/anon_hugepage") - 1);
 }
 
 static inline int is_no_dso_memory(const char *filename)
@@ -235,7 +236,7 @@ struct map *map__new2(u64 start, struct dso *dso, enum map_type type)
  */
 bool __map__is_kernel(const struct map *map)
 {
-	return map->groups->machine->vmlinux_maps[map->type] == map;
+	return __machine__kernel_map(map->groups->machine, map->type) == map;
 }
 
 static void map__exit(struct map *map)
@@ -289,7 +290,7 @@ int map__load(struct map *map, symbol_filter_t filter)
 	nr = dso__load(map->dso, map, filter);
 	if (nr < 0) {
 		if (map->dso->has_build_id) {
-			char sbuild_id[BUILD_ID_SIZE * 2 + 1];
+			char sbuild_id[SBUILD_ID_SIZE];
 
 			build_id__sprintf(map->dso->build_id,
 					  sizeof(map->dso->build_id),
@@ -311,6 +312,9 @@ int map__load(struct map *map, symbol_filter_t filter)
 			pr_warning("%.*s was updated (is prelink enabled?). "
 				"Restart the long running apps that use it!\n",
 				   (int)real_len, name);
+		} else if (filter) {
+			pr_warning("no symbols passed the given filter.\n");
+			return -2;	/* Empty but maybe by the filter */
 		} else {
 			pr_warning("no symbols found in %s, maybe install "
 				   "a debug package?\n", name);
@@ -431,6 +435,13 @@ u64 map__rip_2objdump(struct map *map, u64 rip)
 	if (map->dso->rel)
 		return rip - map->pgoff;
 
+	/*
+	 * kernel modules also have DSO_TYPE_USER in dso->kernel,
+	 * but all kernel modules are ET_REL, so won't get here.
+	 */
+	if (map->dso->kernel == DSO_TYPE_USER)
+		return rip + map->dso->text_offset;
+
 	return map->unmap_ip(map, rip) - map->reloc;
 }
 
@@ -453,6 +464,13 @@ u64 map__objdump_2mem(struct map *map, u64 ip)
 
 	if (map->dso->rel)
 		return map->unmap_ip(map, ip + map->pgoff);
+
+	/*
+	 * kernel modules also have DSO_TYPE_USER in dso->kernel,
+	 * but all kernel modules are ET_REL, so won't get here.
+	 */
+	if (map->dso->kernel == DSO_TYPE_USER)
+		return map->unmap_ip(map, ip - map->dso->text_offset);
 
 	return ip + map->reloc;
 }
@@ -553,13 +571,9 @@ struct symbol *map_groups__find_symbol(struct map_groups *mg,
 	return NULL;
 }
 
-struct symbol *map_groups__find_symbol_by_name(struct map_groups *mg,
-					       enum map_type type,
-					       const char *name,
-					       struct map **mapp,
-					       symbol_filter_t filter)
+struct symbol *maps__find_symbol_by_name(struct maps *maps, const char *name,
+					 struct map **mapp, symbol_filter_t filter)
 {
-	struct maps *maps = &mg->maps[type];
 	struct symbol *sym;
 	struct rb_node *nd;
 
@@ -580,6 +594,17 @@ struct symbol *map_groups__find_symbol_by_name(struct map_groups *mg,
 	sym = NULL;
 out:
 	pthread_rwlock_unlock(&maps->lock);
+	return sym;
+}
+
+struct symbol *map_groups__find_symbol_by_name(struct map_groups *mg,
+					       enum map_type type,
+					       const char *name,
+					       struct map **mapp,
+					       symbol_filter_t filter)
+{
+	struct symbol *sym = maps__find_symbol_by_name(&mg->maps[type], name, mapp, filter);
+
 	return sym;
 }
 
@@ -637,6 +662,12 @@ size_t map_groups__fprintf(struct map_groups *mg, FILE *fp)
 	return printed;
 }
 
+static void __map_groups__insert(struct map_groups *mg, struct map *map)
+{
+	__maps__insert(&mg->maps[map->type], map);
+	map->groups = mg;
+}
+
 static int maps__fixup_overlappings(struct maps *maps, struct map *map, FILE *fp)
 {
 	struct rb_root *root;
@@ -675,9 +706,10 @@ static int maps__fixup_overlappings(struct maps *maps, struct map *map, FILE *fp
 			}
 
 			before->end = map->start;
-			__maps__insert(maps, before);
+			__map_groups__insert(pos->groups, before);
 			if (verbose >= 2)
 				map__fprintf(before, fp);
+			map__put(before);
 		}
 
 		if (map->end < pos->end) {
@@ -689,9 +721,10 @@ static int maps__fixup_overlappings(struct maps *maps, struct map *map, FILE *fp
 			}
 
 			after->start = map->end;
-			__maps__insert(maps, after);
+			__map_groups__insert(pos->groups, after);
 			if (verbose >= 2)
 				map__fprintf(after, fp);
+			map__put(after);
 		}
 put_map:
 		map__put(pos);
@@ -715,9 +748,10 @@ int map_groups__fixup_overlappings(struct map_groups *mg, struct map *map,
 /*
  * XXX This should not really _copy_ te maps, but refcount them.
  */
-int map_groups__clone(struct map_groups *mg,
+int map_groups__clone(struct thread *thread,
 		      struct map_groups *parent, enum map_type type)
 {
+	struct map_groups *mg = thread->mg;
 	int err = -ENOMEM;
 	struct map *map;
 	struct maps *maps = &parent->maps[type];
@@ -728,7 +762,13 @@ int map_groups__clone(struct map_groups *mg,
 		struct map *new = map__clone(map);
 		if (new == NULL)
 			goto out_unlock;
+
+		err = unwind__prepare_access(thread, new, NULL);
+		if (err)
+			goto out_unlock;
+
 		map_groups__insert(mg, new);
+		map__put(new);
 	}
 
 	err = 0;

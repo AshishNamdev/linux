@@ -96,7 +96,7 @@ retry:
 			return 0;
 
 		if (have_drawable_releases && sc > 300) {
-			FENCE_WARN(fence, "failed to wait on release %d "
+			FENCE_WARN(fence, "failed to wait on release %llu "
 					  "after spincount %d\n",
 					  fence->context & ~0xf0000000, sc);
 			goto signaled;
@@ -307,7 +307,7 @@ int qxl_alloc_surface_release_reserved(struct qxl_device *qdev,
 		idr_ret = qxl_release_alloc(qdev, QXL_RELEASE_SURFACE_CMD, release);
 		if (idr_ret < 0)
 			return idr_ret;
-		bo = qxl_bo_ref(to_qxl_bo(entry->tv.bo));
+		bo = to_qxl_bo(entry->tv.bo);
 
 		(*release)->release_offset = create_rel->release_offset + 64;
 
@@ -316,8 +316,6 @@ int qxl_alloc_surface_release_reserved(struct qxl_device *qdev,
 		info = qxl_release_map(qdev, *release);
 		info->id = idr_ret;
 		qxl_release_unmap(qdev, *release, info);
-
-		qxl_bo_unref(&bo);
 		return 0;
 	}
 

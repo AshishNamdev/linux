@@ -8,7 +8,7 @@
  */
 #include <linux/threads.h>
 #include <linux/cpumask.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/ctype.h>
@@ -101,10 +101,10 @@ static struct apic apic_default = {
 
 	.get_apic_id			= default_get_apic_id,
 	.set_apic_id			= NULL,
-	.apic_id_mask			= 0x0F << 24,
 
 	.cpu_mask_to_apicid_and		= flat_cpu_mask_to_apicid_and,
 
+	.send_IPI			= default_send_IPI_single,
 	.send_IPI_mask			= default_send_IPI_mask_logical,
 	.send_IPI_mask_allbutself	= default_send_IPI_mask_allbutself_logical,
 	.send_IPI_allbutself		= default_send_IPI_allbutself,

@@ -26,6 +26,8 @@ create_package() {
 	# Fix ownership and permissions
 	chown -R root:root "$pdir"
 	chmod -R go-w "$pdir"
+	# in case we are in a restrictive umask environment like 0077
+	chmod -R a+rX "$pdir"
 
 	# Create the package
 	dpkg-gencontrol $forcearch -Vkernel:debarch="${debarch}" -p$pname -P"$pdir"
@@ -52,7 +54,16 @@ set_debarch() {
 	arm64)
 		debarch=arm64 ;;
 	arm*)
-		debarch=arm$(grep -q CONFIG_AEABI=y $KCONFIG_CONFIG && echo el || true) ;;
+		if grep -q CONFIG_AEABI=y $KCONFIG_CONFIG; then
+		    if grep -q CONFIG_VFP=y $KCONFIG_CONFIG; then
+			debarch=armhf
+		    else
+			debarch=armel
+		    fi
+		else
+		    debarch=arm
+		fi
+		;;
 	*)
 		debarch=$(dpkg --print-architecture)
 		echo "" >&2
@@ -115,7 +126,7 @@ esac
 BUILD_DEBUG="$(grep -s '^CONFIG_DEBUG_INFO=y' $KCONFIG_CONFIG || true)"
 
 # Setup the directory structure
-rm -rf "$tmpdir" "$fwdir" "$kernel_headers_dir" "$libc_headers_dir" "$dbg_dir"
+rm -rf "$tmpdir" "$fwdir" "$kernel_headers_dir" "$libc_headers_dir" "$dbg_dir" $objtree/debian/files
 mkdir -m 755 -p "$tmpdir/DEBIAN"
 mkdir -p "$tmpdir/lib" "$tmpdir/boot"
 mkdir -p "$fwdir/lib/firmware/$version/"
@@ -229,7 +240,8 @@ maintainer="$name <$email>"
 # Try to determine distribution
 if [ -n "$KDEB_CHANGELOG_DIST" ]; then
         distribution=$KDEB_CHANGELOG_DIST
-elif distribution=$(lsb_release -cs 2>/dev/null) && [ -n "$distribution" ]; then
+# In some cases lsb_release returns the codename as n/a, which breaks dpkg-parsechangelog
+elif distribution=$(lsb_release -cs 2>/dev/null) && [ -n "$distribution" ] && [ "$distribution" != "n/a" ]; then
         : # nothing to do in this case
 else
         distribution="unstable"
@@ -313,10 +325,16 @@ fi
 
 # Build kernel header package
 (cd $srctree; find . -name Makefile\* -o -name Kconfig\* -o -name \*.pl) > "$objtree/debian/hdrsrcfiles"
-(cd $srctree; find arch/$SRCARCH/include include scripts -type f) >> "$objtree/debian/hdrsrcfiles"
+(cd $srctree; find arch/*/include include scripts -type f) >> "$objtree/debian/hdrsrcfiles"
 (cd $srctree; find arch/$SRCARCH -name module.lds -o -name Kbuild.platforms -o -name Platform) >> "$objtree/debian/hdrsrcfiles"
 (cd $srctree; find $(find arch/$SRCARCH -name include -o -name scripts -type d) -type f) >> "$objtree/debian/hdrsrcfiles"
+if grep -q '^CONFIG_STACK_VALIDATION=y' $KCONFIG_CONFIG ; then
+	(cd $objtree; find tools/objtool -type f -executable) >> "$objtree/debian/hdrobjfiles"
+fi
 (cd $objtree; find arch/$SRCARCH/include Module.symvers include scripts -type f) >> "$objtree/debian/hdrobjfiles"
+if grep -q '^CONFIG_GCC_PLUGINS=y' $KCONFIG_CONFIG ; then
+	(cd $objtree; find scripts/gcc-plugins -name \*.so -o -name gcc-common.h) >> "$objtree/debian/hdrobjfiles"
+fi
 destdir=$kernel_headers_dir/usr/src/linux-headers-$version
 mkdir -p "$destdir"
 (cd $srctree; tar -c -f - -T -) < "$objtree/debian/hdrsrcfiles" | (cd $destdir; tar -xf -)
@@ -408,7 +426,7 @@ binary-arch:
 	\$(MAKE) KDEB_SOURCENAME=${sourcename} KDEB_PKGVERSION=${packageversion} bindeb-pkg
 
 clean:
-	rm -rf debian/*tmp
+	rm -rf debian/*tmp debian/files
 	mv debian/ debian.backup # debian/ might be cleaned away
 	\$(MAKE) clean
 	mv debian.backup debian

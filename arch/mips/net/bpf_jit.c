@@ -426,7 +426,7 @@ static inline void emit_load_ptr(unsigned int dst, unsigned int src,
 static inline void emit_load_func(unsigned int reg, ptr imm,
 				  struct jit_ctx *ctx)
 {
-	if (config_enabled(CONFIG_64BIT)) {
+	if (IS_ENABLED(CONFIG_64BIT)) {
 		/* At this point imm is always 64-bit */
 		emit_load_imm(r_tmp, (u64)imm >> 32, ctx);
 		emit_dsll(r_tmp_imm, r_tmp, 16, ctx); /* left shift by 16 */
@@ -516,22 +516,9 @@ static inline void emit_jr(unsigned int reg, struct jit_ctx *ctx)
 static inline u16 align_sp(unsigned int num)
 {
 	/* Double word alignment for 32-bit, quadword for 64-bit */
-	unsigned int align = config_enabled(CONFIG_64BIT) ? 16 : 8;
+	unsigned int align = IS_ENABLED(CONFIG_64BIT) ? 16 : 8;
 	num = (num + (align - 1)) & -align;
 	return num;
-}
-
-static bool is_load_to_a(u16 inst)
-{
-	switch (inst) {
-	case BPF_LD | BPF_W | BPF_LEN:
-	case BPF_LD | BPF_W | BPF_ABS:
-	case BPF_LD | BPF_H | BPF_ABS:
-	case BPF_LD | BPF_B | BPF_ABS:
-		return true;
-	default:
-		return false;
-	}
 }
 
 static void save_bpf_jit_regs(struct jit_ctx *ctx, unsigned offset)
@@ -614,7 +601,6 @@ static unsigned int get_stack_depth(struct jit_ctx *ctx)
 
 static void build_prologue(struct jit_ctx *ctx)
 {
-	u16 first_inst = ctx->skf->insns[0].code;
 	int sp_off;
 
 	/* Calculate the total offset for the stack pointer */
@@ -641,7 +627,7 @@ static void build_prologue(struct jit_ctx *ctx)
 		emit_jit_reg_move(r_X, r_zero, ctx);
 
 	/* Do not leak kernel data to userspace */
-	if ((first_inst != (BPF_RET | BPF_K)) && !(is_load_to_a(first_inst)))
+	if (bpf_needs_clear_a(&ctx->skf->insns[0]))
 		emit_jit_reg_move(r_A, r_zero, ctx);
 }
 
@@ -1213,7 +1199,7 @@ void bpf_jit_compile(struct bpf_prog *fp)
 
 	memset(&ctx, 0, sizeof(ctx));
 
-	ctx.offsets = kcalloc(fp->len, sizeof(*ctx.offsets), GFP_KERNEL);
+	ctx.offsets = kcalloc(fp->len + 1, sizeof(*ctx.offsets), GFP_KERNEL);
 	if (ctx.offsets == NULL)
 		return;
 
@@ -1251,7 +1237,7 @@ void bpf_jit_compile(struct bpf_prog *fp)
 		bpf_jit_dump(fp->len, alloc_size, 2, ctx.target);
 
 	fp->bpf_func = (void *)ctx.target;
-	fp->jited = true;
+	fp->jited = 1;
 
 out:
 	kfree(ctx.offsets);

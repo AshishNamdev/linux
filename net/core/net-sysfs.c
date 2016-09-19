@@ -24,14 +24,13 @@
 #include <linux/jiffies.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
+#include <linux/of_net.h>
 
 #include "net-sysfs.h"
 
 #ifdef CONFIG_SYSFS
 static const char fmt_hex[] = "%#x\n";
-static const char fmt_long_hex[] = "%#lx\n";
 static const char fmt_dec[] = "%d\n";
-static const char fmt_udec[] = "%u\n";
 static const char fmt_ulong[] = "%lu\n";
 static const char fmt_u64[] = "%llu\n";
 
@@ -200,9 +199,10 @@ static ssize_t speed_show(struct device *dev,
 		return restart_syscall();
 
 	if (netif_running(netdev)) {
-		struct ethtool_cmd cmd;
-		if (!__ethtool_get_settings(netdev, &cmd))
-			ret = sprintf(buf, fmt_udec, ethtool_cmd_speed(&cmd));
+		struct ethtool_link_ksettings cmd;
+
+		if (!__ethtool_get_link_ksettings(netdev, &cmd))
+			ret = sprintf(buf, fmt_dec, cmd.base.speed);
 	}
 	rtnl_unlock();
 	return ret;
@@ -219,10 +219,12 @@ static ssize_t duplex_show(struct device *dev,
 		return restart_syscall();
 
 	if (netif_running(netdev)) {
-		struct ethtool_cmd cmd;
-		if (!__ethtool_get_settings(netdev, &cmd)) {
+		struct ethtool_link_ksettings cmd;
+
+		if (!__ethtool_get_link_ksettings(netdev, &cmd)) {
 			const char *duplex;
-			switch (cmd.duplex) {
+
+			switch (cmd.base.duplex) {
 			case DUPLEX_HALF:
 				duplex = "half";
 				break;
@@ -320,7 +322,20 @@ NETDEVICE_SHOW_RW(flags, fmt_hex);
 
 static int change_tx_queue_len(struct net_device *dev, unsigned long new_len)
 {
-	dev->tx_queue_len = new_len;
+	int res, orig_len = dev->tx_queue_len;
+
+	if (new_len != orig_len) {
+		dev->tx_queue_len = new_len;
+		res = call_netdevice_notifiers(NETDEV_CHANGE_TX_QUEUE_LEN, dev);
+		res = notifier_to_errno(res);
+		if (res) {
+			netdev_err(dev,
+				   "refused to change device tx_queue_len\n");
+			dev->tx_queue_len = orig_len;
+			return -EFAULT;
+		}
+	}
+
 	return 0;
 }
 
@@ -472,7 +487,8 @@ static ssize_t phys_switch_id_show(struct device *dev,
 
 	if (dev_isalive(netdev)) {
 		struct switchdev_attr attr = {
-			.id = SWITCHDEV_ATTR_PORT_PARENT_ID,
+			.orig_dev = netdev,
+			.id = SWITCHDEV_ATTR_ID_PORT_PARENT_ID,
 			.flags = SWITCHDEV_F_NO_RECURSE,
 		};
 
@@ -574,6 +590,7 @@ NETSTAT_ENTRY(tx_heartbeat_errors);
 NETSTAT_ENTRY(tx_window_errors);
 NETSTAT_ENTRY(rx_compressed);
 NETSTAT_ENTRY(tx_compressed);
+NETSTAT_ENTRY(rx_nohandler);
 
 static struct attribute *netstat_attrs[] = {
 	&dev_attr_rx_packets.attr,
@@ -599,6 +616,7 @@ static struct attribute *netstat_attrs[] = {
 	&dev_attr_tx_window_errors.attr,
 	&dev_attr_rx_compressed.attr,
 	&dev_attr_tx_compressed.attr,
+	&dev_attr_rx_nohandler.attr,
 	NULL
 };
 
@@ -1004,15 +1022,12 @@ static ssize_t show_trans_timeout(struct netdev_queue *queue,
 }
 
 #ifdef CONFIG_XPS
-static inline unsigned int get_netdev_queue_index(struct netdev_queue *queue)
+static unsigned int get_netdev_queue_index(struct netdev_queue *queue)
 {
 	struct net_device *dev = queue->dev;
-	int i;
+	unsigned int i;
 
-	for (i = 0; i < dev->num_tx_queues; i++)
-		if (queue == &dev->_tx[i])
-			break;
-
+	i = queue - dev->_tx;
 	BUG_ON(i >= dev->num_tx_queues);
 
 	return i;
@@ -1456,8 +1471,8 @@ static void netdev_release(struct device *d)
 
 static const void *net_namespace(struct device *d)
 {
-	struct net_device *dev;
-	dev = container_of(d, struct net_device, dev);
+	struct net_device *dev = to_net_dev(d);
+
 	return dev_net(dev);
 }
 

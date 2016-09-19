@@ -1319,7 +1319,7 @@ static void l2tp_tunnel_del_work(struct work_struct *work)
 	tunnel = container_of(work, struct l2tp_tunnel, del_work);
 	sk = l2tp_tunnel_sock_lookup(tunnel);
 	if (!sk)
-		return;
+		goto out;
 
 	sock = sk->sk_socket;
 
@@ -1341,6 +1341,8 @@ static void l2tp_tunnel_del_work(struct work_struct *work)
 	}
 
 	l2tp_tunnel_sock_put(sk);
+out:
+	l2tp_tunnel_dec_refcount(tunnel);
 }
 
 /* Create a socket for the tunnel, if one isn't set up by
@@ -1374,9 +1376,9 @@ static int l2tp_tunnel_sock_create(struct net *net,
 			memcpy(&udp_conf.peer_ip6, cfg->peer_ip6,
 			       sizeof(udp_conf.peer_ip6));
 			udp_conf.use_udp6_tx_checksums =
-			    cfg->udp6_zero_tx_checksums;
+			  ! cfg->udp6_zero_tx_checksums;
 			udp_conf.use_udp6_rx_checksums =
-			    cfg->udp6_zero_rx_checksums;
+			  ! cfg->udp6_zero_rx_checksums;
 		} else
 #endif
 		{
@@ -1579,7 +1581,7 @@ int l2tp_tunnel_create(struct net *net, int fd, int version, u32 tunnel_id, u32 
 	/* Mark socket as an encapsulation socket. See net/ipv4/udp.c */
 	tunnel->encap = encap;
 	if (encap == L2TP_ENCAPTYPE_UDP) {
-		struct udp_tunnel_sock_cfg udp_cfg;
+		struct udp_tunnel_sock_cfg udp_cfg = { };
 
 		udp_cfg.sk_user_data = tunnel;
 		udp_cfg.encap_type = UDP_ENCAP_L2TPINUDP;
@@ -1636,8 +1638,13 @@ EXPORT_SYMBOL_GPL(l2tp_tunnel_create);
  */
 int l2tp_tunnel_delete(struct l2tp_tunnel *tunnel)
 {
+	l2tp_tunnel_inc_refcount(tunnel);
 	l2tp_tunnel_closeall(tunnel);
-	return (false == queue_work(l2tp_wq, &tunnel->del_work));
+	if (false == queue_work(l2tp_wq, &tunnel->del_work)) {
+		l2tp_tunnel_dec_refcount(tunnel);
+		return 1;
+	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(l2tp_tunnel_delete);
 
@@ -1848,6 +1855,9 @@ static __net_exit void l2tp_exit_net(struct net *net)
 		(void)l2tp_tunnel_delete(tunnel);
 	}
 	rcu_read_unlock_bh();
+
+	flush_workqueue(l2tp_wq);
+	rcu_barrier();
 }
 
 static struct pernet_operations l2tp_net_ops = {

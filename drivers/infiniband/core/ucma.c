@@ -42,6 +42,7 @@
 #include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/module.h>
+#include <linux/nsproxy.h>
 
 #include <rdma/rdma_user_cm.h>
 #include <rdma/ib_marshall.h>
@@ -105,6 +106,7 @@ struct ucma_multicast {
 	int			events_reported;
 
 	u64			uid;
+	u8			join_state;
 	struct list_head	list;
 	struct sockaddr_storage	addr;
 };
@@ -313,7 +315,7 @@ static void ucma_removal_event_handler(struct rdma_cm_id *cm_id)
 		}
 	}
 	if (!event_found)
-		printk(KERN_ERR "ucma_removal_event_handler: warning: connect request event wasn't found\n");
+		pr_err("ucma_removal_event_handler: warning: connect request event wasn't found\n");
 }
 
 static int ucma_event_handler(struct rdma_cm_id *cm_id,
@@ -472,7 +474,8 @@ static ssize_t ucma_create_id(struct ucma_file *file, const char __user *inbuf,
 		return -ENOMEM;
 
 	ctx->uid = cmd.uid;
-	ctx->cm_id = rdma_create_id(ucma_event_handler, ctx, cmd.ps, qp_type);
+	ctx->cm_id = rdma_create_id(current->nsproxy->net_ns,
+				    ucma_event_handler, ctx, cmd.ps, qp_type);
 	if (IS_ERR(ctx->cm_id)) {
 		ret = PTR_ERR(ctx->cm_id);
 		goto err1;
@@ -1211,7 +1214,6 @@ static int ucma_set_ib_path(struct ucma_context *ctx,
 		return -EINVAL;
 
 	memset(&sa_path, 0, sizeof(sa_path));
-	sa_path.vlan_id = 0xffff;
 
 	ib_sa_unpack_path(path_data->path_rec, &sa_path);
 	ret = rdma_set_ib_paths(ctx->cm_id, &sa_path, 1);
@@ -1316,12 +1318,20 @@ static ssize_t ucma_process_join(struct ucma_file *file,
 	struct ucma_multicast *mc;
 	struct sockaddr *addr;
 	int ret;
+	u8 join_state;
 
 	if (out_len < sizeof(resp))
 		return -ENOSPC;
 
 	addr = (struct sockaddr *) &cmd->addr;
-	if (cmd->reserved || !cmd->addr_size || (cmd->addr_size != rdma_addr_size(addr)))
+	if (!cmd->addr_size || (cmd->addr_size != rdma_addr_size(addr)))
+		return -EINVAL;
+
+	if (cmd->join_flags == RDMA_MC_JOIN_FLAG_FULLMEMBER)
+		join_state = BIT(FULLMEMBER_JOIN);
+	else if (cmd->join_flags == RDMA_MC_JOIN_FLAG_SENDONLY_FULLMEMBER)
+		join_state = BIT(SENDONLY_FULLMEMBER_JOIN);
+	else
 		return -EINVAL;
 
 	ctx = ucma_get_ctx(file, cmd->id);
@@ -1334,10 +1344,11 @@ static ssize_t ucma_process_join(struct ucma_file *file,
 		ret = -ENOMEM;
 		goto err1;
 	}
-
+	mc->join_state = join_state;
 	mc->uid = cmd->uid;
 	memcpy(&mc->addr, addr, cmd->addr_size);
-	ret = rdma_join_multicast(ctx->cm_id, (struct sockaddr *) &mc->addr, mc);
+	ret = rdma_join_multicast(ctx->cm_id, (struct sockaddr *)&mc->addr,
+				  join_state, mc);
 	if (ret)
 		goto err2;
 
@@ -1381,7 +1392,7 @@ static ssize_t ucma_join_ip_multicast(struct ucma_file *file,
 	join_cmd.uid = cmd.uid;
 	join_cmd.id = cmd.id;
 	join_cmd.addr_size = rdma_addr_size((struct sockaddr *) &cmd.addr);
-	join_cmd.reserved = 0;
+	join_cmd.join_flags = RDMA_MC_JOIN_FLAG_FULLMEMBER;
 	memcpy(&join_cmd.addr, &cmd.addr, join_cmd.addr_size);
 
 	return ucma_process_join(file, &join_cmd, out_len);
@@ -1573,6 +1584,9 @@ static ssize_t ucma_write(struct file *filp, const char __user *buf,
 	struct rdma_ucm_cmd_hdr hdr;
 	ssize_t ret;
 
+	if (WARN_ON_ONCE(!ib_safe_file_access(filp)))
+		return -EACCES;
+
 	if (len < sizeof(hdr))
 		return -EINVAL;
 
@@ -1624,11 +1638,16 @@ static int ucma_open(struct inode *inode, struct file *filp)
 	if (!file)
 		return -ENOMEM;
 
+	file->close_wq = create_singlethread_workqueue("ucma_close_id");
+	if (!file->close_wq) {
+		kfree(file);
+		return -ENOMEM;
+	}
+
 	INIT_LIST_HEAD(&file->event_list);
 	INIT_LIST_HEAD(&file->ctx_list);
 	init_waitqueue_head(&file->poll_wait);
 	mutex_init(&file->mut);
-	file->close_wq = create_singlethread_workqueue("ucma_close_id");
 
 	filp->private_data = file;
 	file->filp = filp;
@@ -1710,13 +1729,13 @@ static int __init ucma_init(void)
 
 	ret = device_create_file(ucma_misc.this_device, &dev_attr_abi_version);
 	if (ret) {
-		printk(KERN_ERR "rdma_ucm: couldn't create abi_version attr\n");
+		pr_err("rdma_ucm: couldn't create abi_version attr\n");
 		goto err1;
 	}
 
 	ucma_ctl_table_hdr = register_net_sysctl(&init_net, "net/rdma_ucm", ucma_ctl_table);
 	if (!ucma_ctl_table_hdr) {
-		printk(KERN_ERR "rdma_ucm: couldn't register sysctl paths\n");
+		pr_err("rdma_ucm: couldn't register sysctl paths\n");
 		ret = -ENOMEM;
 		goto err2;
 	}

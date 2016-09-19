@@ -38,9 +38,111 @@
 #include "drm_legacy.h"
 #include "drm_internal.h"
 
-static int drm_notifier(void *priv);
-
 static int drm_lock_take(struct drm_lock_data *lock_data, unsigned int context);
+
+/**
+ * Take the heavyweight lock.
+ *
+ * \param lock lock pointer.
+ * \param context locking context.
+ * \return one if the lock is held, or zero otherwise.
+ *
+ * Attempt to mark the lock as held by the given context, via the \p cmpxchg instruction.
+ */
+static
+int drm_lock_take(struct drm_lock_data *lock_data,
+		  unsigned int context)
+{
+	unsigned int old, new, prev;
+	volatile unsigned int *lock = &lock_data->hw_lock->lock;
+
+	spin_lock_bh(&lock_data->spinlock);
+	do {
+		old = *lock;
+		if (old & _DRM_LOCK_HELD)
+			new = old | _DRM_LOCK_CONT;
+		else {
+			new = context | _DRM_LOCK_HELD |
+				((lock_data->user_waiters + lock_data->kernel_waiters > 1) ?
+				 _DRM_LOCK_CONT : 0);
+		}
+		prev = cmpxchg(lock, old, new);
+	} while (prev != old);
+	spin_unlock_bh(&lock_data->spinlock);
+
+	if (_DRM_LOCKING_CONTEXT(old) == context) {
+		if (old & _DRM_LOCK_HELD) {
+			if (context != DRM_KERNEL_CONTEXT) {
+				DRM_ERROR("%d holds heavyweight lock\n",
+					  context);
+			}
+			return 0;
+		}
+	}
+
+	if ((_DRM_LOCKING_CONTEXT(new)) == context && (new & _DRM_LOCK_HELD)) {
+		/* Have lock */
+		return 1;
+	}
+	return 0;
+}
+
+/**
+ * This takes a lock forcibly and hands it to context.	Should ONLY be used
+ * inside *_unlock to give lock to kernel before calling *_dma_schedule.
+ *
+ * \param dev DRM device.
+ * \param lock lock pointer.
+ * \param context locking context.
+ * \return always one.
+ *
+ * Resets the lock file pointer.
+ * Marks the lock as held by the given context, via the \p cmpxchg instruction.
+ */
+static int drm_lock_transfer(struct drm_lock_data *lock_data,
+			     unsigned int context)
+{
+	unsigned int old, new, prev;
+	volatile unsigned int *lock = &lock_data->hw_lock->lock;
+
+	lock_data->file_priv = NULL;
+	do {
+		old = *lock;
+		new = context | _DRM_LOCK_HELD;
+		prev = cmpxchg(lock, old, new);
+	} while (prev != old);
+	return 1;
+}
+
+static int drm_legacy_lock_free(struct drm_lock_data *lock_data,
+				unsigned int context)
+{
+	unsigned int old, new, prev;
+	volatile unsigned int *lock = &lock_data->hw_lock->lock;
+
+	spin_lock_bh(&lock_data->spinlock);
+	if (lock_data->kernel_waiters != 0) {
+		drm_lock_transfer(lock_data, 0);
+		lock_data->idle_has_lock = 1;
+		spin_unlock_bh(&lock_data->spinlock);
+		return 1;
+	}
+	spin_unlock_bh(&lock_data->spinlock);
+
+	do {
+		old = *lock;
+		new = _DRM_LOCKING_CONTEXT(old);
+		prev = cmpxchg(lock, old, new);
+	} while (prev != old);
+
+	if (_DRM_LOCK_IS_HELD(old) && _DRM_LOCKING_CONTEXT(old) != context) {
+		DRM_ERROR("%d freed heavyweight lock held by %d\n",
+			  context, _DRM_LOCKING_CONTEXT(old));
+		return 1;
+	}
+	wake_up_interruptible(&lock_data->lock_queue);
+	return 0;
+}
 
 /**
  * Lock ioctl.
@@ -117,15 +219,9 @@ int drm_legacy_lock(struct drm_device *dev, void *data,
 	/* don't set the block all signals on the master process for now 
 	 * really probably not the correct answer but lets us debug xkb
  	 * xserver for now */
-	if (!file_priv->is_master) {
-		sigemptyset(&dev->sigmask);
-		sigaddset(&dev->sigmask, SIGSTOP);
-		sigaddset(&dev->sigmask, SIGTSTP);
-		sigaddset(&dev->sigmask, SIGTTIN);
-		sigaddset(&dev->sigmask, SIGTTOU);
+	if (!drm_is_current_master(file_priv)) {
 		dev->sigdata.context = lock->context;
 		dev->sigdata.lock = master->lock.hw_lock;
-		block_all_signals(drm_notifier, dev, &dev->sigmask);
 	}
 
 	if (dev->driver->dma_quiescent && (lock->flags & _DRM_LOCK_QUIESCENT))
@@ -169,153 +265,6 @@ int drm_legacy_unlock(struct drm_device *dev, void *data, struct drm_file *file_
 		/* FIXME: Should really bail out here. */
 	}
 
-	unblock_all_signals();
-	return 0;
-}
-
-/**
- * Take the heavyweight lock.
- *
- * \param lock lock pointer.
- * \param context locking context.
- * \return one if the lock is held, or zero otherwise.
- *
- * Attempt to mark the lock as held by the given context, via the \p cmpxchg instruction.
- */
-static
-int drm_lock_take(struct drm_lock_data *lock_data,
-		  unsigned int context)
-{
-	unsigned int old, new, prev;
-	volatile unsigned int *lock = &lock_data->hw_lock->lock;
-
-	spin_lock_bh(&lock_data->spinlock);
-	do {
-		old = *lock;
-		if (old & _DRM_LOCK_HELD)
-			new = old | _DRM_LOCK_CONT;
-		else {
-			new = context | _DRM_LOCK_HELD |
-				((lock_data->user_waiters + lock_data->kernel_waiters > 1) ?
-				 _DRM_LOCK_CONT : 0);
-		}
-		prev = cmpxchg(lock, old, new);
-	} while (prev != old);
-	spin_unlock_bh(&lock_data->spinlock);
-
-	if (_DRM_LOCKING_CONTEXT(old) == context) {
-		if (old & _DRM_LOCK_HELD) {
-			if (context != DRM_KERNEL_CONTEXT) {
-				DRM_ERROR("%d holds heavyweight lock\n",
-					  context);
-			}
-			return 0;
-		}
-	}
-
-	if ((_DRM_LOCKING_CONTEXT(new)) == context && (new & _DRM_LOCK_HELD)) {
-		/* Have lock */
-		return 1;
-	}
-	return 0;
-}
-
-/**
- * This takes a lock forcibly and hands it to context.	Should ONLY be used
- * inside *_unlock to give lock to kernel before calling *_dma_schedule.
- *
- * \param dev DRM device.
- * \param lock lock pointer.
- * \param context locking context.
- * \return always one.
- *
- * Resets the lock file pointer.
- * Marks the lock as held by the given context, via the \p cmpxchg instruction.
- */
-static int drm_lock_transfer(struct drm_lock_data *lock_data,
-			     unsigned int context)
-{
-	unsigned int old, new, prev;
-	volatile unsigned int *lock = &lock_data->hw_lock->lock;
-
-	lock_data->file_priv = NULL;
-	do {
-		old = *lock;
-		new = context | _DRM_LOCK_HELD;
-		prev = cmpxchg(lock, old, new);
-	} while (prev != old);
-	return 1;
-}
-
-/**
- * Free lock.
- *
- * \param dev DRM device.
- * \param lock lock.
- * \param context context.
- *
- * Resets the lock file pointer.
- * Marks the lock as not held, via the \p cmpxchg instruction. Wakes any task
- * waiting on the lock queue.
- */
-int drm_legacy_lock_free(struct drm_lock_data *lock_data, unsigned int context)
-{
-	unsigned int old, new, prev;
-	volatile unsigned int *lock = &lock_data->hw_lock->lock;
-
-	spin_lock_bh(&lock_data->spinlock);
-	if (lock_data->kernel_waiters != 0) {
-		drm_lock_transfer(lock_data, 0);
-		lock_data->idle_has_lock = 1;
-		spin_unlock_bh(&lock_data->spinlock);
-		return 1;
-	}
-	spin_unlock_bh(&lock_data->spinlock);
-
-	do {
-		old = *lock;
-		new = _DRM_LOCKING_CONTEXT(old);
-		prev = cmpxchg(lock, old, new);
-	} while (prev != old);
-
-	if (_DRM_LOCK_IS_HELD(old) && _DRM_LOCKING_CONTEXT(old) != context) {
-		DRM_ERROR("%d freed heavyweight lock held by %d\n",
-			  context, _DRM_LOCKING_CONTEXT(old));
-		return 1;
-	}
-	wake_up_interruptible(&lock_data->lock_queue);
-	return 0;
-}
-
-/**
- * If we get here, it means that the process has called DRM_IOCTL_LOCK
- * without calling DRM_IOCTL_UNLOCK.
- *
- * If the lock is not held, then let the signal proceed as usual.  If the lock
- * is held, then set the contended flag and keep the signal blocked.
- *
- * \param priv pointer to a drm_device structure.
- * \return one if the signal should be delivered normally, or zero if the
- * signal should be blocked.
- */
-static int drm_notifier(void *priv)
-{
-	struct drm_device *dev = priv;
-	struct drm_hw_lock *lock = dev->sigdata.lock;
-	unsigned int old, new, prev;
-
-	/* Allow signal delivery if lock isn't held */
-	if (!lock || !_DRM_LOCK_IS_HELD(lock->lock)
-	    || _DRM_LOCKING_CONTEXT(lock->lock) != dev->sigdata.context)
-		return 1;
-
-	/* Otherwise, set flag to force call to
-	   drmUnlock */
-	do {
-		old = lock->lock;
-		new = old | _DRM_LOCK_CONT;
-		prev = cmpxchg(&lock->lock, old, new);
-	} while (prev != old);
 	return 0;
 }
 
@@ -371,11 +320,27 @@ void drm_legacy_idlelock_release(struct drm_lock_data *lock_data)
 }
 EXPORT_SYMBOL(drm_legacy_idlelock_release);
 
-int drm_legacy_i_have_hw_lock(struct drm_device *dev,
-			      struct drm_file *file_priv)
+static int drm_legacy_i_have_hw_lock(struct drm_device *dev,
+				     struct drm_file *file_priv)
 {
 	struct drm_master *master = file_priv->master;
 	return (file_priv->lock_count && master->lock.hw_lock &&
 		_DRM_LOCK_IS_HELD(master->lock.hw_lock->lock) &&
 		master->lock.file_priv == file_priv);
+}
+
+void drm_legacy_lock_release(struct drm_device *dev, struct file *filp)
+{
+	struct drm_file *file_priv = filp->private_data;
+
+	/* if the master has gone away we can't do anything with the lock */
+	if (!dev->master)
+		return;
+
+	if (drm_legacy_i_have_hw_lock(dev, file_priv)) {
+		DRM_DEBUG("File %p released, freeing lock for context %d\n",
+			  filp, _DRM_LOCKING_CONTEXT(file_priv->master->lock.hw_lock->lock));
+		drm_legacy_lock_free(&file_priv->master->lock,
+				     _DRM_LOCKING_CONTEXT(file_priv->master->lock.hw_lock->lock));
+	}
 }

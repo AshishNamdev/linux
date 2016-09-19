@@ -301,7 +301,7 @@ static inline void emac_netif_stop(struct emac_instance *dev)
 	dev->no_mcast = 1;
 	netif_addr_unlock(dev->ndev);
 	netif_tx_unlock_bh(dev->ndev);
-	dev->ndev->trans_start = jiffies;	/* prevent tx timeout */
+	netif_trans_update(dev->ndev);	/* prevent tx timeout */
 	mal_poll_disable(dev->mal, &dev->commac);
 	netif_tx_disable(dev->ndev);
 }
@@ -1377,7 +1377,7 @@ static inline int emac_xmit_finish(struct emac_instance *dev, int len)
 		DBG2(dev, "stopped TX queue" NL);
 	}
 
-	ndev->trans_start = jiffies;
+	netif_trans_update(ndev);
 	++dev->stats.tx_packets;
 	dev->stats.tx_bytes += len;
 
@@ -2204,7 +2204,6 @@ static void emac_ethtool_get_drvinfo(struct net_device *ndev,
 	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
 	snprintf(info->bus_info, sizeof(info->bus_info), "PPC 4xx EMAC-%d %s",
 		 dev->cell_index, dev->ofdev->dev.of_node->full_name);
-	info->regdump_len = emac_ethtool_get_regs_len(ndev);
 }
 
 static const struct ethtool_ops emac_ethtool_ops = {

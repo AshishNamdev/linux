@@ -224,13 +224,16 @@ static struct fq_flow *fq_classify(struct sk_buff *skb, struct fq_sched_data *q)
 	if (unlikely((skb->priority & TC_PRIO_MAX) == TC_PRIO_CONTROL))
 		return &q->internal;
 
-	/* SYNACK messages are attached to a listener socket.
-	 * 1) They are not part of a 'flow' yet
-	 * 2) We do not want to rate limit them (eg SYNFLOOD attack),
+	/* SYNACK messages are attached to a TCP_NEW_SYN_RECV request socket
+	 * or a listener (SYNCOOKIE mode)
+	 * 1) request sockets are not full blown,
+	 *    they do not contain sk_pacing_rate
+	 * 2) They are not part of a 'flow' yet
+	 * 3) We do not want to rate limit them (eg SYNFLOOD attack),
 	 *    especially if the listener set SO_MAX_PACING_RATE
-	 * 3) We pretend they are orphaned
+	 * 4) We pretend they are orphaned
 	 */
-	if (!sk || sk->sk_state == TCP_LISTEN) {
+	if (!sk || sk_listener(sk)) {
 		unsigned long hash = skb_get_hash(skb) & q->orphan_mask;
 
 		/* By forcing low order bit to 1, we make sure to not
@@ -365,18 +368,19 @@ static void flow_queue_add(struct fq_flow *flow, struct sk_buff *skb)
 	}
 }
 
-static int fq_enqueue(struct sk_buff *skb, struct Qdisc *sch)
+static int fq_enqueue(struct sk_buff *skb, struct Qdisc *sch,
+		      struct sk_buff **to_free)
 {
 	struct fq_sched_data *q = qdisc_priv(sch);
 	struct fq_flow *f;
 
 	if (unlikely(sch->q.qlen >= sch->limit))
-		return qdisc_drop(skb, sch);
+		return qdisc_drop(skb, sch, to_free);
 
 	f = fq_classify(skb, q);
 	if (unlikely(f->qlen >= q->flow_plimit && f != &q->internal)) {
 		q->stat_flows_plimit++;
-		return qdisc_drop(skb, sch);
+		return qdisc_drop(skb, sch, to_free);
 	}
 
 	f->qlen++;
@@ -442,8 +446,7 @@ begin:
 		if (!head->first) {
 			if (q->time_next_delayed_flow != ~0ULL)
 				qdisc_watchdog_schedule_ns(&q->watchdog,
-							   q->time_next_delayed_flow,
-							   false);
+							   q->time_next_delayed_flow);
 			return NULL;
 		}
 	}
@@ -512,17 +515,25 @@ out:
 	return skb;
 }
 
+static void fq_flow_purge(struct fq_flow *flow)
+{
+	rtnl_kfree_skbs(flow->head, flow->tail);
+	flow->head = NULL;
+	flow->qlen = 0;
+}
+
 static void fq_reset(struct Qdisc *sch)
 {
 	struct fq_sched_data *q = qdisc_priv(sch);
 	struct rb_root *root;
-	struct sk_buff *skb;
 	struct rb_node *p;
 	struct fq_flow *f;
 	unsigned int idx;
 
-	while ((skb = fq_dequeue_head(sch, &q->internal)) != NULL)
-		kfree_skb(skb);
+	sch->q.qlen = 0;
+	sch->qstats.backlog = 0;
+
+	fq_flow_purge(&q->internal);
 
 	if (!q->fq_root)
 		return;
@@ -533,8 +544,7 @@ static void fq_reset(struct Qdisc *sch)
 			f = container_of(p, struct fq_flow, fq_node);
 			rb_erase(p, root);
 
-			while ((skb = fq_dequeue_head(sch, f)) != NULL)
-				kfree_skb(skb);
+			fq_flow_purge(f);
 
 			kmem_cache_free(fq_flow_cachep, f);
 		}
@@ -659,6 +669,7 @@ static int fq_change(struct Qdisc *sch, struct nlattr *opt)
 	struct fq_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_FQ_MAX + 1];
 	int err, drop_count = 0;
+	unsigned drop_len = 0;
 	u32 fq_log;
 
 	if (!opt)
@@ -733,10 +744,11 @@ static int fq_change(struct Qdisc *sch, struct nlattr *opt)
 
 		if (!skb)
 			break;
-		kfree_skb(skb);
+		drop_len += qdisc_pkt_len(skb);
+		rtnl_kfree_skbs(skb, skb);
 		drop_count++;
 	}
-	qdisc_tree_decrease_qlen(sch, drop_count);
+	qdisc_tree_reduce_backlog(sch, drop_count, drop_len);
 
 	sch_tree_unlock(sch);
 	return err;

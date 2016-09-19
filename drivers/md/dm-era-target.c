@@ -343,7 +343,9 @@ static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 		}
 	}
 
-	return dm_bm_unlock(b);
+	dm_bm_unlock(b);
+
+	return 0;
 }
 
 /*----------------------------------------------------------------*/
@@ -582,7 +584,9 @@ static int open_metadata(struct era_metadata *md)
 	md->metadata_snap = le64_to_cpu(disk->metadata_snap);
 	md->archived_writesets = true;
 
-	return dm_bm_unlock(sblock);
+	dm_bm_unlock(sblock);
+
+	return 0;
 
 bad:
 	dm_bm_unlock(sblock);
@@ -1046,12 +1050,7 @@ static int metadata_take_snap(struct era_metadata *md)
 
 	md->metadata_snap = dm_block_location(clone);
 
-	r = dm_tm_unlock(md->tm, clone);
-	if (r) {
-		DMERR("%s: couldn't unlock clone", __func__);
-		md->metadata_snap = SUPERBLOCK_LOCATION;
-		return r;
-	}
+	dm_tm_unlock(md->tm, clone);
 
 	return 0;
 }
@@ -1541,9 +1540,9 @@ static int era_map(struct dm_target *ti, struct bio *bio)
 	remap_to_origin(era, bio);
 
 	/*
-	 * REQ_FLUSH bios carry no data, so we're not interested in them.
+	 * REQ_PREFLUSH bios carry no data, so we're not interested in them.
 	 */
-	if (!(bio->bi_rw & REQ_FLUSH) &&
+	if (!(bio->bi_opf & REQ_PREFLUSH) &&
 	    (bio_data_dir(bio) == WRITE) &&
 	    !metadata_current_marked(era->md, block)) {
 		defer_bio(era, bio);

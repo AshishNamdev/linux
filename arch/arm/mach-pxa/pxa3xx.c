@@ -30,7 +30,7 @@
 #include <mach/pxa3xx-regs.h>
 #include <mach/reset.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
-#include <mach/pm.h>
+#include "pm.h"
 #include <mach/dma.h>
 #include <mach/smemc.h>
 #include <mach/irqs.h>
@@ -42,10 +42,6 @@
 #define PECR_IS(n)	((1 << ((n) * 2)) << 29)
 
 extern void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int));
-#ifdef CONFIG_PM
-
-#define ISRAM_START	0x5c000000
-#define ISRAM_SIZE	SZ_256K
 
 /*
  * NAND NFC: DFI bus arbitration subset
@@ -53,6 +49,11 @@ extern void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int));
 #define NDCR			(*(volatile u32 __iomem*)(NAND_VIRT + 0))
 #define NDCR_ND_ARB_EN		(1 << 12)
 #define NDCR_ND_ARB_CNTL	(1 << 19)
+
+#ifdef CONFIG_PM
+
+#define ISRAM_START	0x5c000000
+#define ISRAM_SIZE	SZ_256K
 
 static void __iomem *sram;
 static unsigned long wakeup_src;
@@ -67,7 +68,6 @@ static unsigned long wakeup_src;
  */
 static void pxa3xx_cpu_standby(unsigned int pwrmode)
 {
-	extern const char pm_enter_standby_start[], pm_enter_standby_end[];
 	void (*fn)(unsigned int) = (void __force *)(sram + 0x8000);
 
 	memcpy_toio(sram + 0x8000, pm_enter_standby_start,
@@ -102,10 +102,9 @@ static void pxa3xx_cpu_pm_suspend(void)
 #ifndef CONFIG_IWMMXT
 	u64 acc0;
 
-	asm volatile("mra %Q0, %R0, acc0" : "=r" (acc0));
+	asm volatile(".arch_extension xscale\n\t"
+		     "mra %Q0, %R0, acc0" : "=r" (acc0));
 #endif
-
-	extern int pxa3xx_finish_suspend(unsigned long);
 
 	/* resuming from D2 requires the HSIO2/BOOT/TPM clocks enabled */
 	CKENA |= (1 << CKEN_BOOT) | (1 << CKEN_TPM);
@@ -132,7 +131,8 @@ static void pxa3xx_cpu_pm_suspend(void)
 	AD3ER = 0;
 
 #ifndef CONFIG_IWMMXT
-	asm volatile("mar acc0, %Q0, %R0" : "=r" (acc0));
+	asm volatile(".arch_extension xscale\n\t"
+		     "mar acc0, %Q0, %R0" : "=r" (acc0));
 #endif
 }
 
@@ -449,7 +449,7 @@ static int __init pxa3xx_init(void)
 		if (of_have_populated_dt())
 			return 0;
 
-		pxa2xx_set_dmac_info(32);
+		pxa2xx_set_dmac_info(32, 100);
 		ret = platform_add_devices(devices, ARRAY_SIZE(devices));
 		if (ret)
 			return ret;

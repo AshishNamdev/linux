@@ -1758,7 +1758,7 @@ static void rhine_reset_task(struct work_struct *work)
 
 	spin_unlock_bh(&rp->lock);
 
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	dev->stats.tx_errors++;
 	netif_wake_queue(dev);
 
@@ -2134,9 +2134,10 @@ static int rhine_rx(struct net_device *dev, int limit)
 			}
 
 			skb_put(skb, pkt_len);
-			skb->protocol = eth_type_trans(skb, dev);
 
 			rhine_rx_vlan_tag(skb, desc, data_size);
+
+			skb->protocol = eth_type_trans(skb, dev);
 
 			netif_receive_skb(skb);
 

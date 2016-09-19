@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -27,7 +23,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright (c) 2012, Intel Corporation.
+ * Copyright (c) 2012, 2015, Intel Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
@@ -41,7 +37,6 @@
  */
 
 #define DEBUG_SUBSYSTEM S_LOG
-
 
 #include "../include/lustre_log.h"
 
@@ -78,13 +73,12 @@ void lustre_swab_ost_id(struct ost_id *oid)
 }
 EXPORT_SYMBOL(lustre_swab_ost_id);
 
-void lustre_swab_llog_id(struct llog_logid *log_id)
+static void lustre_swab_llog_id(struct llog_logid *log_id)
 {
 	__swab64s(&log_id->lgl_oi.oi.oi_id);
 	__swab64s(&log_id->lgl_oi.oi.oi_seq);
 	__swab32s(&log_id->lgl_ogen);
 }
-EXPORT_SYMBOL(lustre_swab_llog_id);
 
 void lustre_swab_llogd_body(struct llogd_body *d)
 {
@@ -109,13 +103,12 @@ void lustre_swab_llogd_conn_body(struct llogd_conn_body *d)
 }
 EXPORT_SYMBOL(lustre_swab_llogd_conn_body);
 
-void lustre_swab_ll_fid(struct ll_fid *fid)
+static void lustre_swab_ll_fid(struct ll_fid *fid)
 {
 	__swab64s(&fid->id);
 	__swab32s(&fid->generation);
 	__swab32s(&fid->f_type);
 }
-EXPORT_SYMBOL(lustre_swab_ll_fid);
 
 void lustre_swab_lu_seq_range(struct lu_seq_range *range)
 {
@@ -349,7 +342,6 @@ void lustre_swab_lustre_cfg(struct lustre_cfg *lcfg)
 		__swab32s(&lcfg->lcfg_buflens[i]);
 
 	print_lustre_cfg(lcfg);
-	return;
 }
 EXPORT_SYMBOL(lustre_swab_lustre_cfg);
 
@@ -390,7 +382,8 @@ void lustre_swab_cfg_marker(struct cfg_marker *marker, int swab, int size)
 		 *
 		 * Overwrite fields from the end first, so they are not
 		 * clobbered, and use memmove() instead of memcpy() because
-		 * the source and target buffers overlap.  bug 16771 */
+		 * the source and target buffers overlap.  bug 16771
+		 */
 		createtime = cm32->cm_createtime;
 		canceltime = cm32->cm_canceltime;
 		memmove(marker->cm_comment, cm32->cm_comment, MTI_NAMELEN32);
@@ -409,7 +402,5 @@ void lustre_swab_cfg_marker(struct cfg_marker *marker, int swab, int size)
 		__swab64s(&marker->cm_createtime);
 		__swab64s(&marker->cm_canceltime);
 	}
-
-	return;
 }
 EXPORT_SYMBOL(lustre_swab_cfg_marker);

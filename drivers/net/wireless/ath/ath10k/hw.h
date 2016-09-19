@@ -22,6 +22,15 @@
 
 #define ATH10K_FW_DIR			"ath10k"
 
+#define QCA988X_2_0_DEVICE_ID   (0x003c)
+#define QCA6164_2_1_DEVICE_ID   (0x0041)
+#define QCA6174_2_1_DEVICE_ID   (0x003e)
+#define QCA99X0_2_0_DEVICE_ID   (0x0040)
+#define QCA9888_2_0_DEVICE_ID	(0x0056)
+#define QCA9984_1_0_DEVICE_ID	(0x0046)
+#define QCA9377_1_0_DEVICE_ID   (0x0042)
+#define QCA9887_1_0_DEVICE_ID   (0x0050)
+
 /* QCA988X 1.0 definitions (unsupported) */
 #define QCA988X_HW_1_0_CHIP_ID_REV	0x0
 
@@ -29,10 +38,15 @@
 #define QCA988X_HW_2_0_VERSION		0x4100016c
 #define QCA988X_HW_2_0_CHIP_ID_REV	0x2
 #define QCA988X_HW_2_0_FW_DIR		ATH10K_FW_DIR "/QCA988X/hw2.0"
-#define QCA988X_HW_2_0_FW_FILE		"firmware.bin"
-#define QCA988X_HW_2_0_OTP_FILE		"otp.bin"
 #define QCA988X_HW_2_0_BOARD_DATA_FILE	"board.bin"
 #define QCA988X_HW_2_0_PATCH_LOAD_ADDR	0x1234
+
+/* QCA9887 1.0 definitions */
+#define QCA9887_HW_1_0_VERSION		0x4100016d
+#define QCA9887_HW_1_0_CHIP_ID_REV	0
+#define QCA9887_HW_1_0_FW_DIR		ATH10K_FW_DIR "/QCA9887/hw1.0"
+#define QCA9887_HW_1_0_BOARD_DATA_FILE	"board.bin"
+#define QCA9887_HW_1_0_PATCH_LOAD_ADDR	0x1234
 
 /* QCA6174 target BMI version signatures */
 #define QCA6174_HW_1_0_VERSION		0x05000000
@@ -41,6 +55,10 @@
 #define QCA6174_HW_2_1_VERSION		0x05010000
 #define QCA6174_HW_3_0_VERSION		0x05020000
 #define QCA6174_HW_3_2_VERSION		0x05030000
+
+/* QCA9377 target BMI version signatures */
+#define QCA9377_HW_1_0_DEV_VERSION	0x05020000
+#define QCA9377_HW_1_1_DEV_VERSION	0x05020001
 
 enum qca6174_pci_rev {
 	QCA6174_PCI_REV_1_1 = 0x11,
@@ -60,15 +78,16 @@ enum qca6174_chip_id_rev {
 	QCA6174_HW_3_2_CHIP_ID_REV = 10,
 };
 
+enum qca9377_chip_id_rev {
+	QCA9377_HW_1_0_CHIP_ID_REV = 0x0,
+	QCA9377_HW_1_1_CHIP_ID_REV = 0x1,
+};
+
 #define QCA6174_HW_2_1_FW_DIR		"ath10k/QCA6174/hw2.1"
-#define QCA6174_HW_2_1_FW_FILE		"firmware.bin"
-#define QCA6174_HW_2_1_OTP_FILE		"otp.bin"
 #define QCA6174_HW_2_1_BOARD_DATA_FILE	"board.bin"
 #define QCA6174_HW_2_1_PATCH_LOAD_ADDR	0x1234
 
 #define QCA6174_HW_3_0_FW_DIR		"ath10k/QCA6174/hw3.0"
-#define QCA6174_HW_3_0_FW_FILE		"firmware.bin"
-#define QCA6174_HW_3_0_OTP_FILE		"otp.bin"
 #define QCA6174_HW_3_0_BOARD_DATA_FILE	"board.bin"
 #define QCA6174_HW_3_0_PATCH_LOAD_ADDR	0x1234
 
@@ -79,10 +98,35 @@ enum qca6174_chip_id_rev {
 #define QCA99X0_HW_2_0_DEV_VERSION     0x01000000
 #define QCA99X0_HW_2_0_CHIP_ID_REV     0x1
 #define QCA99X0_HW_2_0_FW_DIR          ATH10K_FW_DIR "/QCA99X0/hw2.0"
-#define QCA99X0_HW_2_0_FW_FILE         "firmware.bin"
-#define QCA99X0_HW_2_0_OTP_FILE        "otp.bin"
 #define QCA99X0_HW_2_0_BOARD_DATA_FILE "board.bin"
 #define QCA99X0_HW_2_0_PATCH_LOAD_ADDR	0x1234
+
+/* QCA9984 1.0 defines */
+#define QCA9984_HW_1_0_DEV_VERSION	0x1000000
+#define QCA9984_HW_DEV_TYPE		0xa
+#define QCA9984_HW_1_0_CHIP_ID_REV	0x0
+#define QCA9984_HW_1_0_FW_DIR		ATH10K_FW_DIR "/QCA9984/hw1.0"
+#define QCA9984_HW_1_0_BOARD_DATA_FILE "board.bin"
+#define QCA9984_HW_1_0_PATCH_LOAD_ADDR	0x1234
+
+/* QCA9888 2.0 defines */
+#define QCA9888_HW_2_0_DEV_VERSION	0x1000000
+#define QCA9888_HW_DEV_TYPE		0xc
+#define QCA9888_HW_2_0_CHIP_ID_REV	0x0
+#define QCA9888_HW_2_0_FW_DIR		ATH10K_FW_DIR "/QCA9888/hw2.0"
+#define QCA9888_HW_2_0_BOARD_DATA_FILE "board.bin"
+#define QCA9888_HW_2_0_PATCH_LOAD_ADDR	0x1234
+
+/* QCA9377 1.0 definitions */
+#define QCA9377_HW_1_0_FW_DIR          ATH10K_FW_DIR "/QCA9377/hw1.0"
+#define QCA9377_HW_1_0_BOARD_DATA_FILE "board.bin"
+#define QCA9377_HW_1_0_PATCH_LOAD_ADDR	0x1234
+
+/* QCA4019 1.0 definitions */
+#define QCA4019_HW_1_0_DEV_VERSION     0x01000000
+#define QCA4019_HW_1_0_FW_DIR          ATH10K_FW_DIR "/QCA4019/hw1.0"
+#define QCA4019_HW_1_0_BOARD_DATA_FILE "board.bin"
+#define QCA4019_HW_1_0_PATCH_LOAD_ADDR  0x1234
 
 #define ATH10K_FW_API2_FILE		"firmware-2.bin"
 #define ATH10K_FW_API3_FILE		"firmware-3.bin"
@@ -94,13 +138,15 @@ enum qca6174_chip_id_rev {
 #define ATH10K_FW_API5_FILE		"firmware-5.bin"
 
 #define ATH10K_FW_UTF_FILE		"utf.bin"
+#define ATH10K_FW_UTF_API2_FILE		"utf-2.bin"
 
 /* includes also the null byte */
 #define ATH10K_FIRMWARE_MAGIC               "QCA-ATH10K"
+#define ATH10K_BOARD_MAGIC                  "QCA-ATH10K-BOARD"
+
+#define ATH10K_BOARD_API2_FILE         "board-2.bin"
 
 #define REG_DUMP_COUNT_QCA988X 60
-
-#define QCA988X_CAL_DATA_LEN		2116
 
 struct ath10k_fw_ie {
 	__le32 id;
@@ -159,14 +205,28 @@ enum ath10k_fw_htt_op_version {
 	ATH10K_FW_HTT_OP_VERSION_MAX,
 };
 
+enum ath10k_bd_ie_type {
+	/* contains sub IEs of enum ath10k_bd_ie_board_type */
+	ATH10K_BD_IE_BOARD = 0,
+};
+
+enum ath10k_bd_ie_board_type {
+	ATH10K_BD_IE_BOARD_NAME = 0,
+	ATH10K_BD_IE_BOARD_DATA = 1,
+};
+
 enum ath10k_hw_rev {
 	ATH10K_HW_QCA988X,
 	ATH10K_HW_QCA6174,
 	ATH10K_HW_QCA99X0,
+	ATH10K_HW_QCA9888,
+	ATH10K_HW_QCA9984,
+	ATH10K_HW_QCA9377,
+	ATH10K_HW_QCA4019,
+	ATH10K_HW_QCA9887,
 };
 
 struct ath10k_hw_regs {
-	u32 rtc_state_cold_reset_mask;
 	u32 rtc_soc_base_address;
 	u32 rtc_wmac_base_address;
 	u32 soc_core_base_address;
@@ -195,6 +255,7 @@ struct ath10k_hw_regs {
 extern const struct ath10k_hw_regs qca988x_regs;
 extern const struct ath10k_hw_regs qca6174_regs;
 extern const struct ath10k_hw_regs qca99x0_regs;
+extern const struct ath10k_hw_regs qca4019_regs;
 
 struct ath10k_hw_values {
 	u32 rtc_state_val_on;
@@ -208,13 +269,20 @@ struct ath10k_hw_values {
 extern const struct ath10k_hw_values qca988x_values;
 extern const struct ath10k_hw_values qca6174_values;
 extern const struct ath10k_hw_values qca99x0_values;
+extern const struct ath10k_hw_values qca9888_values;
+extern const struct ath10k_hw_values qca4019_values;
 
 void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
 				u32 cc, u32 rcc, u32 cc_prev, u32 rcc_prev);
 
 #define QCA_REV_988X(ar) ((ar)->hw_rev == ATH10K_HW_QCA988X)
+#define QCA_REV_9887(ar) ((ar)->hw_rev == ATH10K_HW_QCA9887)
 #define QCA_REV_6174(ar) ((ar)->hw_rev == ATH10K_HW_QCA6174)
 #define QCA_REV_99X0(ar) ((ar)->hw_rev == ATH10K_HW_QCA99X0)
+#define QCA_REV_9888(ar) ((ar)->hw_rev == ATH10K_HW_QCA9888)
+#define QCA_REV_9984(ar) ((ar)->hw_rev == ATH10K_HW_QCA9984)
+#define QCA_REV_9377(ar) ((ar)->hw_rev == ATH10K_HW_QCA9377)
+#define QCA_REV_40XX(ar) ((ar)->hw_rev == ATH10K_HW_QCA4019)
 
 /* Known pecularities:
  *  - raw appears in nwifi decap, raw and nwifi appear in ethernet decap
@@ -239,15 +307,6 @@ enum ath10k_mcast2ucast_mode {
 	ATH10K_MCAST2UCAST_ENABLED = 1,
 };
 
-struct ath10k_pktlog_hdr {
-	__le16 flags;
-	__le16 missed_cnt;
-	__le16 log_type;
-	__le16 size;
-	__le32 timestamp;
-	u8 payload[0];
-} __packed;
-
 enum ath10k_hw_rate_ofdm {
 	ATH10K_HW_RATE_OFDM_48M = 0,
 	ATH10K_HW_RATE_OFDM_24M,
@@ -267,6 +326,41 @@ enum ath10k_hw_rate_cck {
 	ATH10K_HW_RATE_CCK_SP_11M,
 	ATH10K_HW_RATE_CCK_SP_5_5M,
 	ATH10K_HW_RATE_CCK_SP_2M,
+};
+
+enum ath10k_hw_rate_rev2_cck {
+	ATH10K_HW_RATE_REV2_CCK_LP_1M = 1,
+	ATH10K_HW_RATE_REV2_CCK_LP_2M,
+	ATH10K_HW_RATE_REV2_CCK_LP_5_5M,
+	ATH10K_HW_RATE_REV2_CCK_LP_11M,
+	ATH10K_HW_RATE_REV2_CCK_SP_2M,
+	ATH10K_HW_RATE_REV2_CCK_SP_5_5M,
+	ATH10K_HW_RATE_REV2_CCK_SP_11M,
+};
+
+enum ath10k_hw_4addr_pad {
+	ATH10K_HW_4ADDR_PAD_AFTER,
+	ATH10K_HW_4ADDR_PAD_BEFORE,
+};
+
+enum ath10k_hw_cc_wraparound_type {
+	ATH10K_HW_CC_WRAP_DISABLED = 0,
+
+	/* This type is when the HW chip has a quirky Cycle Counter
+	 * wraparound which resets to 0x7fffffff instead of 0. All
+	 * other CC related counters (e.g. Rx Clear Count) are divided
+	 * by 2 so they never wraparound themselves.
+	 */
+	ATH10K_HW_CC_WRAP_SHIFTED_ALL = 1,
+
+	/* Each hw counter wrapsaround independently. When the
+	 * counter overflows the repestive counter is right shifted
+	 * by 1, i.e reset to 0x7fffffff, and other counters will be
+	 * running unaffected. In this type of wraparound, it should
+	 * be possible to report accurate Rx busy time unlike the
+	 * first type.
+	 */
+	ATH10K_HW_CC_WRAP_SHIFTED_EACH = 2,
 };
 
 /* Target specific defines for MAIN firmware */
@@ -310,7 +404,10 @@ enum ath10k_hw_rate_cck {
 #define TARGET_10X_MAC_AGGR_DELIM		0
 #define TARGET_10X_AST_SKID_LIMIT		128
 #define TARGET_10X_NUM_STATIONS			128
+#define TARGET_10X_TX_STATS_NUM_STATIONS	118
 #define TARGET_10X_NUM_PEERS			((TARGET_10X_NUM_STATIONS) + \
+						 (TARGET_10X_NUM_VDEVS))
+#define TARGET_10X_TX_STATS_NUM_PEERS		((TARGET_10X_TX_STATS_NUM_STATIONS) + \
 						 (TARGET_10X_NUM_VDEVS))
 #define TARGET_10X_NUM_OFFLOAD_PEERS		0
 #define TARGET_10X_NUM_OFFLOAD_REORDER_BUFS	0
@@ -318,6 +415,8 @@ enum ath10k_hw_rate_cck {
 #define TARGET_10X_NUM_TIDS_MAX			256
 #define TARGET_10X_NUM_TIDS			min((TARGET_10X_NUM_TIDS_MAX), \
 						    (TARGET_10X_NUM_PEERS) * 2)
+#define TARGET_10X_TX_STATS_NUM_TIDS		min((TARGET_10X_NUM_TIDS_MAX), \
+						    (TARGET_10X_TX_STATS_NUM_PEERS) * 2)
 #define TARGET_10X_TX_CHAIN_MASK		(BIT(0) | BIT(1) | BIT(2))
 #define TARGET_10X_RX_CHAIN_MASK		(BIT(0) | BIT(1) | BIT(2))
 #define TARGET_10X_RX_TIMEOUT_LO_PRI		100
@@ -337,7 +436,7 @@ enum ath10k_hw_rate_cck {
 #define TARGET_10X_MAX_FRAG_ENTRIES		0
 
 /* 10.2 parameters */
-#define TARGET_10_2_DMA_BURST_SIZE		1
+#define TARGET_10_2_DMA_BURST_SIZE		0
 
 /* Target specific defines for WMI-TLV firmware */
 #define TARGET_TLV_NUM_VDEVS			4
@@ -362,15 +461,14 @@ enum ath10k_hw_rate_cck {
 
 #define TARGET_10_4_NUM_QCACHE_PEERS_MAX	512
 #define TARGET_10_4_QCACHE_ACTIVE_PEERS		50
+#define TARGET_10_4_QCACHE_ACTIVE_PEERS_PFC	35
 #define TARGET_10_4_NUM_OFFLOAD_PEERS		0
 #define TARGET_10_4_NUM_OFFLOAD_REORDER_BUFFS	0
 #define TARGET_10_4_NUM_PEER_KEYS		2
 #define TARGET_10_4_TGT_NUM_TIDS		((TARGET_10_4_NUM_PEERS) * 2)
+#define TARGET_10_4_NUM_MSDU_DESC		(1024 + 400)
+#define TARGET_10_4_NUM_MSDU_DESC_PFC		2500
 #define TARGET_10_4_AST_SKID_LIMIT		32
-#define TARGET_10_4_TX_CHAIN_MASK		(BIT(0) | BIT(1) | \
-						 BIT(2) | BIT(3))
-#define TARGET_10_4_RX_CHAIN_MASK		(BIT(0) | BIT(1) | \
-						 BIT(2) | BIT(3))
 
 /* 100 ms for video, best-effort, and background */
 #define TARGET_10_4_RX_TIMEOUT_LO_PRI		100
@@ -391,12 +489,11 @@ enum ath10k_hw_rate_cck {
 
 #define TARGET_10_4_TX_DBG_LOG_SIZE		1024
 #define TARGET_10_4_NUM_WDS_ENTRIES		32
-#define TARGET_10_4_DMA_BURST_SIZE		1
+#define TARGET_10_4_DMA_BURST_SIZE		0
 #define TARGET_10_4_MAC_AGGR_DELIM		0
 #define TARGET_10_4_RX_SKIP_DEFRAG_TIMEOUT_DUP_DETECTION_CHECK 1
 #define TARGET_10_4_VOW_CONFIG			0
 #define TARGET_10_4_GTK_OFFLOAD_MAX_VDEV	3
-#define TARGET_10_4_NUM_MSDU_DESC		(1024 + 400)
 #define TARGET_10_4_11AC_TX_MAX_FRAGS		2
 #define TARGET_10_4_MAX_PEER_EXT_STATS		16
 #define TARGET_10_4_SMART_ANT_CAP		0
@@ -412,16 +509,6 @@ enum ath10k_hw_rate_cck {
 
 /* Number of Copy Engines supported */
 #define CE_COUNT ar->hw_values->ce_count
-
-/*
- * Total number of PCIe MSI interrupts requested for all interrupt sources.
- * PCIe standard forces this to be a power of 2.
- * Some Host OS's limit MSI requests that can be granted to 8
- * so for now we abide by this limit and avoid requesting more
- * than that.
- */
-#define MSI_NUM_REQUEST_LOG2	3
-#define MSI_NUM_REQUEST		(1<<MSI_NUM_REQUEST_LOG2)
 
 /*
  * Granted MSIs are assigned as follows:
@@ -440,7 +527,6 @@ enum ath10k_hw_rate_cck {
 /* as of IP3.7.1 */
 #define RTC_STATE_V_ON				ar->hw_values->rtc_state_val_on
 
-#define RTC_STATE_COLD_RESET_MASK		ar->regs->rtc_state_cold_reset_mask
 #define RTC_STATE_V_LSB				0
 #define RTC_STATE_V_MASK			0x00000007
 #define RTC_STATE_ADDRESS			0x0000
@@ -503,7 +589,10 @@ enum ath10k_hw_rate_cck {
 #define WLAN_SYSTEM_SLEEP_DISABLE_MASK		0x00000001
 
 #define WLAN_GPIO_PIN0_ADDRESS			0x00000028
+#define WLAN_GPIO_PIN0_CONFIG_LSB		11
 #define WLAN_GPIO_PIN0_CONFIG_MASK		0x00007800
+#define WLAN_GPIO_PIN0_PAD_PULL_LSB		5
+#define WLAN_GPIO_PIN0_PAD_PULL_MASK		0x00000060
 #define WLAN_GPIO_PIN1_ADDRESS			0x0000002c
 #define WLAN_GPIO_PIN1_CONFIG_MASK		0x00007800
 #define WLAN_GPIO_PIN10_ADDRESS			0x00000050
@@ -516,6 +605,8 @@ enum ath10k_hw_rate_cck {
 #define CLOCK_GPIO_BT_CLK_OUT_EN_MASK		0
 
 #define SI_CONFIG_OFFSET			0x00000000
+#define SI_CONFIG_ERR_INT_LSB			19
+#define SI_CONFIG_ERR_INT_MASK			0x00080000
 #define SI_CONFIG_BIDIR_OD_DATA_LSB		18
 #define SI_CONFIG_BIDIR_OD_DATA_MASK		0x00040000
 #define SI_CONFIG_I2C_LSB			16
@@ -529,7 +620,9 @@ enum ath10k_hw_rate_cck {
 #define SI_CONFIG_DIVIDER_LSB			0
 #define SI_CONFIG_DIVIDER_MASK			0x0000000f
 #define SI_CS_OFFSET				0x00000004
+#define SI_CS_DONE_ERR_LSB			10
 #define SI_CS_DONE_ERR_MASK			0x00000400
+#define SI_CS_DONE_INT_LSB			9
 #define SI_CS_DONE_INT_MASK			0x00000200
 #define SI_CS_START_LSB				8
 #define SI_CS_START_MASK			0x00000100
@@ -558,6 +651,7 @@ enum ath10k_hw_rate_cck {
 #define FW_INDICATOR_ADDRESS			ar->regs->fw_indicator_address
 #define FW_IND_EVENT_PENDING			1
 #define FW_IND_INITIALIZED			2
+#define FW_IND_HOST_READY			0x80000000
 
 /* HOST_REG interrupt from firmware */
 #define PCIE_INTR_FIRMWARE_MASK			ar->regs->pcie_intr_fw_mask
@@ -579,7 +673,10 @@ enum ath10k_hw_rate_cck {
 #define GPIO_BASE_ADDRESS			WLAN_GPIO_BASE_ADDRESS
 #define GPIO_PIN0_OFFSET			WLAN_GPIO_PIN0_ADDRESS
 #define GPIO_PIN1_OFFSET			WLAN_GPIO_PIN1_ADDRESS
+#define GPIO_PIN0_CONFIG_LSB			WLAN_GPIO_PIN0_CONFIG_LSB
 #define GPIO_PIN0_CONFIG_MASK			WLAN_GPIO_PIN0_CONFIG_MASK
+#define GPIO_PIN0_PAD_PULL_LSB			WLAN_GPIO_PIN0_PAD_PULL_LSB
+#define GPIO_PIN0_PAD_PULL_MASK			WLAN_GPIO_PIN0_PAD_PULL_MASK
 #define GPIO_PIN1_CONFIG_MASK			WLAN_GPIO_PIN1_CONFIG_MASK
 #define SI_BASE_ADDRESS				WLAN_SI_BASE_ADDRESS
 #define SCRATCH_BASE_ADDRESS			SOC_CORE_BASE_ADDRESS
@@ -633,6 +730,18 @@ enum ath10k_hw_rate_cck {
 #define WINDOW_DATA_ADDRESS			MISSING
 #define WINDOW_READ_ADDR_ADDRESS		MISSING
 #define WINDOW_WRITE_ADDR_ADDRESS		MISSING
+
+#define QCA9887_1_0_I2C_SDA_GPIO_PIN		5
+#define QCA9887_1_0_I2C_SDA_PIN_CONFIG		3
+#define QCA9887_1_0_SI_CLK_GPIO_PIN		17
+#define QCA9887_1_0_SI_CLK_PIN_CONFIG		3
+#define QCA9887_1_0_GPIO_ENABLE_W1TS_LOW_ADDRESS 0x00000010
+
+#define QCA9887_EEPROM_SELECT_READ		0xa10000a0
+#define QCA9887_EEPROM_ADDR_HI_MASK		0x0000ff00
+#define QCA9887_EEPROM_ADDR_HI_LSB		8
+#define QCA9887_EEPROM_ADDR_LO_MASK		0x00ff0000
+#define QCA9887_EEPROM_ADDR_LO_LSB		16
 
 #define RTC_STATE_V_GET(x) (((x) & RTC_STATE_V_MASK) >> RTC_STATE_V_LSB)
 

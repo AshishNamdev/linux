@@ -91,50 +91,6 @@ static int codec_exec_verb(struct hdac_device *dev, unsigned int cmd,
 }
 
 /**
- * snd_hda_codec_read - send a command and get the response
- * @codec: the HDA codec
- * @nid: NID to send the command
- * @flags: optional bit flags
- * @verb: the verb to send
- * @parm: the parameter for the verb
- *
- * Send a single command and read the corresponding response.
- *
- * Returns the obtained response value, or -1 for an error.
- */
-unsigned int snd_hda_codec_read(struct hda_codec *codec, hda_nid_t nid,
-				int flags,
-				unsigned int verb, unsigned int parm)
-{
-	unsigned int cmd = snd_hdac_make_cmd(&codec->core, nid, verb, parm);
-	unsigned int res;
-	if (snd_hdac_exec_verb(&codec->core, cmd, flags, &res))
-		return -1;
-	return res;
-}
-EXPORT_SYMBOL_GPL(snd_hda_codec_read);
-
-/**
- * snd_hda_codec_write - send a single command without waiting for response
- * @codec: the HDA codec
- * @nid: NID to send the command
- * @flags: optional bit flags
- * @verb: the verb to send
- * @parm: the parameter for the verb
- *
- * Send a single command without waiting for response.
- *
- * Returns 0 if successful, or a negative error code.
- */
-int snd_hda_codec_write(struct hda_codec *codec, hda_nid_t nid, int flags,
-			unsigned int verb, unsigned int parm)
-{
-	unsigned int cmd = snd_hdac_make_cmd(&codec->core, nid, verb, parm);
-	return snd_hdac_exec_verb(&codec->core, cmd, flags, NULL);
-}
-EXPORT_SYMBOL_GPL(snd_hda_codec_write);
-
-/**
  * snd_hda_sequence_write - sequence writes
  * @codec: the HDA codec
  * @seq: VERB array to send
@@ -3367,10 +3323,8 @@ int snd_hda_codec_build_pcms(struct hda_codec *codec)
 	int dev, err;
 
 	err = snd_hda_codec_parse_pcms(codec);
-	if (err < 0) {
-		snd_hda_codec_reset(codec);
+	if (err < 0)
 		return err;
-	}
 
 	/* attach a new PCM streams */
 	list_for_each_entry(cpcm, &codec->pcm_list_head, list) {
@@ -3630,6 +3584,12 @@ static void setup_dig_out_stream(struct hda_codec *codec, hda_nid_t nid,
 	bool reset;
 
 	spdif = snd_hda_spdif_out_of_nid(codec, nid);
+	/* Add sanity check to pass klockwork check.
+	 * This should never happen.
+	 */
+	if (WARN_ON(spdif == NULL))
+		return;
+
 	curr_fmt = snd_hda_codec_read(codec, nid, 0,
 				      AC_VERB_GET_STREAM_FORMAT, 0);
 	reset = codec->spdif_status_reset &&
@@ -3814,7 +3774,7 @@ int snd_hda_multi_out_analog_prepare(struct hda_codec *codec,
 	spdif = snd_hda_spdif_out_of_nid(codec, mout->dig_out_nid);
 	if (mout->dig_out_nid && mout->share_spdif &&
 	    mout->dig_out_used != HDA_DIG_EXCLUSIVE) {
-		if (chs == 2 &&
+		if (chs == 2 && spdif != NULL &&
 		    snd_hda_is_supported_format(codec, mout->dig_out_nid,
 						format) &&
 		    !(spdif->status & IEC958_AES0_NONAUDIO)) {

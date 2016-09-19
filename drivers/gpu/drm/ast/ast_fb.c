@@ -163,16 +163,13 @@ static struct fb_ops astfb_ops = {
 };
 
 static int astfb_create_object(struct ast_fbdev *afbdev,
-			       struct drm_mode_fb_cmd2 *mode_cmd,
+			       const struct drm_mode_fb_cmd2 *mode_cmd,
 			       struct drm_gem_object **gobj_p)
 {
 	struct drm_device *dev = afbdev->helper.dev;
-	u32 bpp, depth;
 	u32 size;
 	struct drm_gem_object *gobj;
-
 	int ret = 0;
-	drm_fb_get_bpp_depth(mode_cmd->pixel_format, &depth, &bpp);
 
 	size = mode_cmd->pitches[0] * mode_cmd->height;
 	ret = ast_gem_create(dev, size, true, &gobj);
@@ -364,4 +361,11 @@ void ast_fbdev_set_suspend(struct drm_device *dev, int state)
 		return;
 
 	drm_fb_helper_set_suspend(&ast->fbdev->helper, state);
+}
+
+void ast_fbdev_set_base(struct ast_private *ast, unsigned long gpu_addr)
+{
+	ast->fbdev->helper.fbdev->fix.smem_start =
+		ast->fbdev->helper.fbdev->apertures->ranges[0].base + gpu_addr;
+	ast->fbdev->helper.fbdev->fix.smem_len = ast->vram_size - gpu_addr;
 }

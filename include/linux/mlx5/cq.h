@@ -45,7 +45,7 @@ struct mlx5_core_cq {
 	atomic_t		refcount;
 	struct completion	free;
 	unsigned		vector;
-	int			irqn;
+	unsigned int		irqn;
 	void (*comp)		(struct mlx5_core_cq *);
 	void (*event)		(struct mlx5_core_cq *, enum mlx5_event);
 	struct mlx5_uar	       *uar;
@@ -53,6 +53,13 @@ struct mlx5_core_cq {
 	unsigned		arm_sn;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
+	struct {
+		struct list_head list;
+		void (*comp)(struct mlx5_core_cq *);
+		void		*priv;
+	} tasklet_ctx;
+	int			reset_notify_added;
+	struct list_head	reset_notify;
 };
 
 

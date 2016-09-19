@@ -581,7 +581,7 @@ static int wm2000_anc_transition(struct wm2000_priv *wm2000,
 	if (anc_transitions[i].dest == ANC_OFF)
 		clk_disable_unprepare(wm2000->mclk);
 
-	return ret;
+	return 0;
 }
 
 static int wm2000_anc_set_mode(struct wm2000_priv *wm2000)
@@ -620,7 +620,7 @@ static int wm2000_anc_mode_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 	struct wm2000_priv *wm2000 = dev_get_drvdata(codec->dev);
-	int anc_active = ucontrol->value.integer.value[0];
+	unsigned int anc_active = ucontrol->value.integer.value[0];
 	int ret;
 
 	if (anc_active > 1)
@@ -653,7 +653,7 @@ static int wm2000_speaker_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 	struct wm2000_priv *wm2000 = dev_get_drvdata(codec->dev);
-	int val = ucontrol->value.integer.value[0];
+	unsigned int val = ucontrol->value.integer.value[0];
 	int ret;
 
 	if (val > 1)

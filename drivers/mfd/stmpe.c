@@ -23,6 +23,27 @@
 #include <linux/regulator/consumer.h>
 #include "stmpe.h"
 
+/**
+ * struct stmpe_platform_data - STMPE platform data
+ * @id: device id to distinguish between multiple STMPEs on the same board
+ * @blocks: bitmask of blocks to enable (use STMPE_BLOCK_*)
+ * @irq_trigger: IRQ trigger to use for the interrupt to the host
+ * @autosleep: bool to enable/disable stmpe autosleep
+ * @autosleep_timeout: inactivity timeout in milliseconds for autosleep
+ * @irq_over_gpio: true if gpio is used to get irq
+ * @irq_gpio: gpio number over which irq will be requested (significant only if
+ *	      irq_over_gpio is true)
+ */
+struct stmpe_platform_data {
+	int id;
+	unsigned int blocks;
+	unsigned int irq_trigger;
+	bool autosleep;
+	bool irq_over_gpio;
+	int irq_gpio;
+	int autosleep_timeout;
+};
+
 static int __stmpe_enable(struct stmpe *stmpe, unsigned int blocks)
 {
 	return stmpe->variant->enable(stmpe, blocks, true);
@@ -334,6 +355,31 @@ static const struct mfd_cell stmpe_keypad_cell = {
 };
 
 /*
+ * PWM (1601, 2401, 2403)
+ */
+static struct resource stmpe_pwm_resources[] = {
+	{
+		.name	= "PWM0",
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "PWM1",
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "PWM2",
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static const struct mfd_cell stmpe_pwm_cell = {
+	.name		= "stmpe-pwm",
+	.of_compatible  = "st,stmpe-pwm",
+	.resources	= stmpe_pwm_resources,
+	.num_resources	= ARRAY_SIZE(stmpe_pwm_resources),
+};
+
+/*
  * STMPE801
  */
 static const u8 stmpe801_regs[] = {
@@ -536,6 +582,11 @@ static struct stmpe_variant_block stmpe1601_blocks[] = {
 		.cell	= &stmpe_keypad_cell,
 		.irq	= STMPE1601_IRQ_KEYPAD,
 		.block	= STMPE_BLOCK_KEYPAD,
+	},
+	{
+		.cell	= &stmpe_pwm_cell,
+		.irq	= STMPE1601_IRQ_PWM0,
+		.block	= STMPE_BLOCK_PWM,
 	},
 };
 
@@ -771,6 +822,11 @@ static struct stmpe_variant_block stmpe24xx_blocks[] = {
 		.irq	= STMPE24XX_IRQ_KEYPAD,
 		.block	= STMPE_BLOCK_KEYPAD,
 	},
+	{
+		.cell	= &stmpe_pwm_cell,
+		.irq	= STMPE24XX_IRQ_PWM0,
+		.block	= STMPE_BLOCK_PWM,
+	},
 };
 
 static int stmpe24xx_enable(struct stmpe *stmpe, unsigned int blocks,
@@ -795,6 +851,7 @@ static int stmpe24xx_get_altfunc(struct stmpe *stmpe, enum stmpe_block block)
 		return 2;
 
 	case STMPE_BLOCK_KEYPAD:
+	case STMPE_BLOCK_PWM:
 		return 1;
 
 	case STMPE_BLOCK_GPIO:
@@ -1151,24 +1208,19 @@ static void stmpe_of_probe(struct stmpe_platform_data *pdata,
 /* Called from client specific probe routines */
 int stmpe_probe(struct stmpe_client_info *ci, enum stmpe_partnum partnum)
 {
-	struct stmpe_platform_data *pdata = dev_get_platdata(ci->dev);
+	struct stmpe_platform_data *pdata;
 	struct device_node *np = ci->dev->of_node;
 	struct stmpe *stmpe;
 	int ret;
 
-	if (!pdata) {
-		if (!np)
-			return -EINVAL;
+	pdata = devm_kzalloc(ci->dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return -ENOMEM;
 
-		pdata = devm_kzalloc(ci->dev, sizeof(*pdata), GFP_KERNEL);
-		if (!pdata)
-			return -ENOMEM;
+	stmpe_of_probe(pdata, np);
 
-		stmpe_of_probe(pdata, np);
-
-		if (of_find_property(np, "interrupts", NULL) == NULL)
-			ci->irq = -1;
-	}
+	if (of_find_property(np, "interrupts", NULL) == NULL)
+		ci->irq = -1;
 
 	stmpe = devm_kzalloc(ci->dev, sizeof(struct stmpe), GFP_KERNEL);
 	if (!stmpe)

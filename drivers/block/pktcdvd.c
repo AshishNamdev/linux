@@ -704,14 +704,14 @@ static int pkt_generic_packet(struct pktcdvd_device *pd, struct packet_command *
 	int ret = 0;
 
 	rq = blk_get_request(q, (cgc->data_direction == CGC_DATA_WRITE) ?
-			     WRITE : READ, __GFP_WAIT);
+			     WRITE : READ, __GFP_RECLAIM);
 	if (IS_ERR(rq))
 		return PTR_ERR(rq);
 	blk_rq_set_block_pc(rq);
 
 	if (cgc->buflen) {
 		ret = blk_rq_map_kern(q, rq, cgc->buffer, cgc->buflen,
-				      __GFP_WAIT);
+				      __GFP_RECLAIM);
 		if (ret)
 			goto out;
 	}
@@ -1074,7 +1074,7 @@ static void pkt_gather_data(struct pktcdvd_device *pd, struct packet_data *pkt)
 			BUG();
 
 		atomic_inc(&pkt->io_wait);
-		bio->bi_rw = READ;
+		bio_set_op_attrs(bio, REQ_OP_READ, 0);
 		pkt_queue_bio(pd, bio);
 		frames_read++;
 	}
@@ -1157,7 +1157,7 @@ static int pkt_start_recovery(struct packet_data *pkt)
 
 	bio_reset(pkt->bio);
 	pkt->bio->bi_bdev = pd->bdev;
-	pkt->bio->bi_rw = REQ_WRITE;
+	bio_set_op_attrs(pkt->bio, REQ_OP_WRITE, 0);
 	pkt->bio->bi_iter.bi_sector = new_sector;
 	pkt->bio->bi_iter.bi_size = pkt->frames * CD_FRAMESIZE;
 	pkt->bio->bi_vcnt = pkt->frames;
@@ -1336,7 +1336,7 @@ static void pkt_start_write(struct pktcdvd_device *pd, struct packet_data *pkt)
 
 	/* Start the write request */
 	atomic_set(&pkt->io_wait, 1);
-	pkt->w_bio->bi_rw = WRITE;
+	bio_set_op_attrs(pkt->w_bio, REQ_OP_WRITE, 0);
 	pkt_queue_bio(pd, pkt->w_bio);
 }
 
@@ -2441,7 +2441,7 @@ static void pkt_make_request_write(struct request_queue *q, struct bio *bio)
 	}
 }
 
-static void pkt_make_request(struct request_queue *q, struct bio *bio)
+static blk_qc_t pkt_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct pktcdvd_device *pd;
 	char b[BDEVNAME_SIZE];
@@ -2467,7 +2467,7 @@ static void pkt_make_request(struct request_queue *q, struct bio *bio)
 	 */
 	if (bio_data_dir(bio) == READ) {
 		pkt_make_request_read(pd, bio);
-		return;
+		return BLK_QC_T_NONE;
 	}
 
 	if (!test_bit(PACKET_WRITABLE, &pd->flags)) {
@@ -2499,12 +2499,11 @@ static void pkt_make_request(struct request_queue *q, struct bio *bio)
 		pkt_make_request_write(q, split);
 	} while (split != bio);
 
-	return;
+	return BLK_QC_T_NONE;
 end_io:
 	bio_io_error(bio);
+	return BLK_QC_T_NONE;
 }
-
-
 
 static void pkt_init_queue(struct pktcdvd_device *pd)
 {
@@ -2803,8 +2802,7 @@ out_new_dev:
 out_mem2:
 	put_disk(disk);
 out_mem:
-	if (pd->rb_pool)
-		mempool_destroy(pd->rb_pool);
+	mempool_destroy(pd->rb_pool);
 	kfree(pd);
 out_mutex:
 	mutex_unlock(&ctl_mutex);

@@ -39,7 +39,7 @@
 #include "gpmc.h"
 #include "gpmc-smsc911x.h"
 
-#include <video/omapdss.h>
+#include <linux/platform_data/omapdss.h>
 #include <video/omap-panel-data.h>
 
 #include "board-flash.h"
@@ -47,6 +47,7 @@
 #include "hsmmc.h"
 #include "control.h"
 #include "common-board-devices.h"
+#include "display.h"
 
 #define LDP_SMSC911X_CS		1
 #define LDP_SMSC911X_GPIO	152
@@ -424,6 +425,6 @@ MACHINE_START(OMAP_LDP, "OMAP LDP board")
 	.init_irq	= omap3_init_irq,
 	.init_machine	= omap_ldp_init,
 	.init_late	= omap3430_init_late,
-	.init_time	= omap3_sync32k_timer_init,
+	.init_time	= omap_init_time,
 	.restart	= omap3xxx_restart,
 MACHINE_END

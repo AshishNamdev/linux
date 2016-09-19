@@ -28,8 +28,6 @@
 struct omap_dmadev {
 	struct dma_device ddev;
 	spinlock_t lock;
-	struct tasklet_struct task;
-	struct list_head pending;
 	void __iomem *base;
 	const struct omap_dma_reg *reg_map;
 	struct omap_system_dma_plat_info *plat;
@@ -42,7 +40,6 @@ struct omap_dmadev {
 
 struct omap_chan {
 	struct virt_dma_chan vc;
-	struct list_head node;
 	void __iomem *channel_base;
 	const struct omap_dma_reg *reg_map;
 	uint32_t ccr;
@@ -51,6 +48,7 @@ struct omap_chan {
 	unsigned dma_sig;
 	bool cyclic;
 	bool paused;
+	bool running;
 
 	int dma_ch;
 	struct omap_desc *desc;
@@ -61,6 +59,8 @@ struct omap_sg {
 	dma_addr_t addr;
 	uint32_t en;		/* number of elements (24-bit) */
 	uint32_t fn;		/* number of frames (16-bit) */
+	int32_t fi;		/* for double indexing */
+	int16_t ei;		/* for double indexing */
 };
 
 struct omap_desc {
@@ -68,7 +68,8 @@ struct omap_desc {
 	enum dma_transfer_direction dir;
 	dma_addr_t dev_addr;
 
-	int16_t fi;		/* for OMAP_DMA_SYNC_PACKET */
+	int32_t fi;		/* for OMAP_DMA_SYNC_PACKET / double indexing */
+	int16_t ei;		/* for double indexing */
 	uint8_t es;		/* CSDP_DATA_TYPE_xxx */
 	uint32_t ccr;		/* CCR value */
 	uint16_t clnk_ctrl;	/* CLNK_CTRL value */
@@ -297,6 +298,8 @@ static void omap_dma_start(struct omap_chan *c, struct omap_desc *d)
 
 	/* Enable channel */
 	omap_dma_chan_write(c, CCR, d->ccr | CCR_ENABLE);
+
+	c->running = true;
 }
 
 static void omap_dma_stop(struct omap_chan *c)
@@ -358,6 +361,8 @@ static void omap_dma_stop(struct omap_chan *c)
 
 		omap_dma_chan_write(c, CLNK_CTRL, val);
 	}
+
+	c->running = false;
 }
 
 static void omap_dma_start_sg(struct omap_chan *c, struct omap_desc *d,
@@ -377,8 +382,8 @@ static void omap_dma_start_sg(struct omap_chan *c, struct omap_desc *d,
 	}
 
 	omap_dma_chan_write(c, cxsa, sg->addr);
-	omap_dma_chan_write(c, cxei, 0);
-	omap_dma_chan_write(c, cxfi, 0);
+	omap_dma_chan_write(c, cxei, sg->ei);
+	omap_dma_chan_write(c, cxfi, sg->fi);
 	omap_dma_chan_write(c, CEN, sg->en);
 	omap_dma_chan_write(c, CFN, sg->fn);
 
@@ -423,7 +428,7 @@ static void omap_dma_start_desc(struct omap_chan *c)
 	}
 
 	omap_dma_chan_write(c, cxsa, d->dev_addr);
-	omap_dma_chan_write(c, cxei, 0);
+	omap_dma_chan_write(c, cxei, d->ei);
 	omap_dma_chan_write(c, cxfi, d->fi);
 	omap_dma_chan_write(c, CSDP, d->csdp);
 	omap_dma_chan_write(c, CLNK_CTRL, d->clnk_ctrl);
@@ -452,33 +457,6 @@ static void omap_dma_callback(int ch, u16 status, void *data)
 		}
 	}
 	spin_unlock_irqrestore(&c->vc.lock, flags);
-}
-
-/*
- * This callback schedules all pending channels.  We could be more
- * clever here by postponing allocation of the real DMA channels to
- * this point, and freeing them when our virtual channel becomes idle.
- *
- * We would then need to deal with 'all channels in-use'
- */
-static void omap_dma_sched(unsigned long data)
-{
-	struct omap_dmadev *d = (struct omap_dmadev *)data;
-	LIST_HEAD(head);
-
-	spin_lock_irq(&d->lock);
-	list_splice_tail_init(&d->pending, &head);
-	spin_unlock_irq(&d->lock);
-
-	while (!list_empty(&head)) {
-		struct omap_chan *c = list_first_entry(&head,
-			struct omap_chan, node);
-
-		spin_lock_irq(&c->vc.lock);
-		list_del_init(&c->node);
-		omap_dma_start_desc(c);
-		spin_unlock_irq(&c->vc.lock);
-	}
 }
 
 static irqreturn_t omap_dma_irq(int irq, void *devid)
@@ -706,6 +684,17 @@ static enum dma_status omap_dma_tx_status(struct dma_chan *chan,
 	unsigned long flags;
 
 	ret = dma_cookie_status(chan, cookie, txstate);
+
+	if (!c->paused && c->running) {
+		uint32_t ccr = omap_dma_chan_read(c, CCR);
+		/*
+		 * The channel is no longer active, set the return value
+		 * accordingly
+		 */
+		if (!(ccr & CCR_ENABLE))
+			ret = DMA_COMPLETE;
+	}
+
 	if (ret == DMA_COMPLETE || !txstate)
 		return ret;
 
@@ -719,7 +708,7 @@ static enum dma_status omap_dma_tx_status(struct dma_chan *chan,
 
 		if (d->dir == DMA_MEM_TO_DEV)
 			pos = omap_dma_get_src_pos(c);
-		else if (d->dir == DMA_DEV_TO_MEM)
+		else if (d->dir == DMA_DEV_TO_MEM  || d->dir == DMA_MEM_TO_MEM)
 			pos = omap_dma_get_dst_pos(c);
 		else
 			pos = 0;
@@ -739,22 +728,8 @@ static void omap_dma_issue_pending(struct dma_chan *chan)
 	unsigned long flags;
 
 	spin_lock_irqsave(&c->vc.lock, flags);
-	if (vchan_issue_pending(&c->vc) && !c->desc) {
-		/*
-		 * c->cyclic is used only by audio and in this case the DMA need
-		 * to be started without delay.
-		 */
-		if (!c->cyclic) {
-			struct omap_dmadev *d = to_omap_dma_dev(chan->device);
-			spin_lock(&d->lock);
-			if (list_empty(&c->node))
-				list_add_tail(&c->node, &d->pending);
-			spin_unlock(&d->lock);
-			tasklet_schedule(&d->task);
-		} else {
-			omap_dma_start_desc(c);
-		}
-	}
+	if (vchan_issue_pending(&c->vc) && !c->desc)
+		omap_dma_start_desc(c);
 	spin_unlock_irqrestore(&c->vc.lock, flags);
 }
 
@@ -768,7 +743,7 @@ static struct dma_async_tx_descriptor *omap_dma_prep_slave_sg(
 	struct scatterlist *sgent;
 	struct omap_desc *d;
 	dma_addr_t dev_addr;
-	unsigned i, j = 0, es, en, frame_bytes;
+	unsigned i, es, en, frame_bytes;
 	u32 burst;
 
 	if (dir == DMA_DEV_TO_MEM) {
@@ -845,13 +820,12 @@ static struct dma_async_tx_descriptor *omap_dma_prep_slave_sg(
 	en = burst;
 	frame_bytes = es_bytes[es] * en;
 	for_each_sg(sgl, sgent, sglen, i) {
-		d->sg[j].addr = sg_dma_address(sgent);
-		d->sg[j].en = en;
-		d->sg[j].fn = sg_dma_len(sgent) / frame_bytes;
-		j++;
+		d->sg[i].addr = sg_dma_address(sgent);
+		d->sg[i].en = en;
+		d->sg[i].fn = sg_dma_len(sgent) / frame_bytes;
 	}
 
-	d->sglen = j;
+	d->sglen = sglen;
 
 	return vchan_tx_prep(&c->vc, &d->vd, tx_flags);
 }
@@ -935,8 +909,12 @@ static struct dma_async_tx_descriptor *omap_dma_prep_dma_cyclic(
 		else
 			d->ccr |= CCR_SYNC_ELEMENT;
 
-		if (dir == DMA_DEV_TO_MEM)
+		if (dir == DMA_DEV_TO_MEM) {
 			d->ccr |= CCR_TRIGGER_SRC;
+			d->csdp |= CSDP_DST_PACKED;
+		} else {
+			d->csdp |= CSDP_SRC_PACKED;
+		}
 
 		d->cicr |= CICR_MISALIGNED_ERR_IE | CICR_TRANS_ERR_IE;
 
@@ -980,9 +958,7 @@ static struct dma_async_tx_descriptor *omap_dma_prep_dma_memcpy(
 	d->ccr = c->ccr;
 	d->ccr |= CCR_DST_AMODE_POSTINC | CCR_SRC_AMODE_POSTINC;
 
-	d->cicr = CICR_DROP_IE;
-	if (tx_flags & DMA_PREP_INTERRUPT)
-		d->cicr |= CICR_FRAME_IE;
+	d->cicr = CICR_DROP_IE | CICR_FRAME_IE;
 
 	d->csdp = data_type;
 
@@ -996,6 +972,89 @@ static struct dma_async_tx_descriptor *omap_dma_prep_dma_memcpy(
 	}
 
 	return vchan_tx_prep(&c->vc, &d->vd, tx_flags);
+}
+
+static struct dma_async_tx_descriptor *omap_dma_prep_dma_interleaved(
+	struct dma_chan *chan, struct dma_interleaved_template *xt,
+	unsigned long flags)
+{
+	struct omap_chan *c = to_omap_dma_chan(chan);
+	struct omap_desc *d;
+	struct omap_sg *sg;
+	uint8_t data_type;
+	size_t src_icg, dst_icg;
+
+	/* Slave mode is not supported */
+	if (is_slave_direction(xt->dir))
+		return NULL;
+
+	if (xt->frame_size != 1 || xt->numf == 0)
+		return NULL;
+
+	d = kzalloc(sizeof(*d) + sizeof(d->sg[0]), GFP_ATOMIC);
+	if (!d)
+		return NULL;
+
+	data_type = __ffs((xt->src_start | xt->dst_start | xt->sgl[0].size));
+	if (data_type > CSDP_DATA_TYPE_32)
+		data_type = CSDP_DATA_TYPE_32;
+
+	sg = &d->sg[0];
+	d->dir = DMA_MEM_TO_MEM;
+	d->dev_addr = xt->src_start;
+	d->es = data_type;
+	sg->en = xt->sgl[0].size / BIT(data_type);
+	sg->fn = xt->numf;
+	sg->addr = xt->dst_start;
+	d->sglen = 1;
+	d->ccr = c->ccr;
+
+	src_icg = dmaengine_get_src_icg(xt, &xt->sgl[0]);
+	dst_icg = dmaengine_get_dst_icg(xt, &xt->sgl[0]);
+	if (src_icg) {
+		d->ccr |= CCR_SRC_AMODE_DBLIDX;
+		d->ei = 1;
+		d->fi = src_icg;
+	} else if (xt->src_inc) {
+		d->ccr |= CCR_SRC_AMODE_POSTINC;
+		d->fi = 0;
+	} else {
+		dev_err(chan->device->dev,
+			"%s: SRC constant addressing is not supported\n",
+			__func__);
+		kfree(d);
+		return NULL;
+	}
+
+	if (dst_icg) {
+		d->ccr |= CCR_DST_AMODE_DBLIDX;
+		sg->ei = 1;
+		sg->fi = dst_icg;
+	} else if (xt->dst_inc) {
+		d->ccr |= CCR_DST_AMODE_POSTINC;
+		sg->fi = 0;
+	} else {
+		dev_err(chan->device->dev,
+			"%s: DST constant addressing is not supported\n",
+			__func__);
+		kfree(d);
+		return NULL;
+	}
+
+	d->cicr = CICR_DROP_IE | CICR_FRAME_IE;
+
+	d->csdp = data_type;
+
+	if (dma_omap1()) {
+		d->cicr |= CICR_TOUT_IE;
+		d->csdp |= CSDP_DST_PORT_EMIFF | CSDP_SRC_PORT_EMIFF;
+	} else {
+		d->csdp |= CSDP_DST_PACKED | CSDP_SRC_PACKED;
+		d->cicr |= CICR_MISALIGNED_ERR_IE | CICR_TRANS_ERR_IE;
+		d->csdp |= CSDP_DST_BURST_64 | CSDP_SRC_BURST_64;
+	}
+
+	return vchan_tx_prep(&c->vc, &d->vd, flags);
 }
 
 static int omap_dma_slave_config(struct dma_chan *chan, struct dma_slave_config *cfg)
@@ -1014,16 +1073,10 @@ static int omap_dma_slave_config(struct dma_chan *chan, struct dma_slave_config 
 static int omap_dma_terminate_all(struct dma_chan *chan)
 {
 	struct omap_chan *c = to_omap_dma_chan(chan);
-	struct omap_dmadev *d = to_omap_dma_dev(c->vc.chan.device);
 	unsigned long flags;
 	LIST_HEAD(head);
 
 	spin_lock_irqsave(&c->vc.lock, flags);
-
-	/* Prevent this channel being scheduled */
-	spin_lock(&d->lock);
-	list_del_init(&c->node);
-	spin_unlock(&d->lock);
 
 	/*
 	 * Stop DMA activity: we assume the callback will not be called
@@ -1048,6 +1101,13 @@ static int omap_dma_terminate_all(struct dma_chan *chan)
 	vchan_dma_desc_free_list(&c->vc, &head);
 
 	return 0;
+}
+
+static void omap_dma_synchronize(struct dma_chan *chan)
+{
+	struct omap_chan *c = to_omap_dma_chan(chan);
+
+	vchan_synchronize(&c->vc);
 }
 
 static int omap_dma_pause(struct dma_chan *chan)
@@ -1098,14 +1158,12 @@ static int omap_dma_chan_init(struct omap_dmadev *od)
 	c->reg_map = od->reg_map;
 	c->vc.desc_free = omap_dma_desc_free;
 	vchan_init(&c->vc, &od->ddev);
-	INIT_LIST_HEAD(&c->node);
 
 	return 0;
 }
 
 static void omap_dma_free(struct omap_dmadev *od)
 {
-	tasklet_kill(&od->task);
 	while (!list_empty(&od->ddev.channels)) {
 		struct omap_chan *c = list_first_entry(&od->ddev.channels,
 			struct omap_chan, vc.chan.device_node);
@@ -1144,6 +1202,7 @@ static int omap_dma_probe(struct platform_device *pdev)
 	dma_cap_set(DMA_SLAVE, od->ddev.cap_mask);
 	dma_cap_set(DMA_CYCLIC, od->ddev.cap_mask);
 	dma_cap_set(DMA_MEMCPY, od->ddev.cap_mask);
+	dma_cap_set(DMA_INTERLEAVE, od->ddev.cap_mask);
 	od->ddev.device_alloc_chan_resources = omap_dma_alloc_chan_resources;
 	od->ddev.device_free_chan_resources = omap_dma_free_chan_resources;
 	od->ddev.device_tx_status = omap_dma_tx_status;
@@ -1151,21 +1210,20 @@ static int omap_dma_probe(struct platform_device *pdev)
 	od->ddev.device_prep_slave_sg = omap_dma_prep_slave_sg;
 	od->ddev.device_prep_dma_cyclic = omap_dma_prep_dma_cyclic;
 	od->ddev.device_prep_dma_memcpy = omap_dma_prep_dma_memcpy;
+	od->ddev.device_prep_interleaved_dma = omap_dma_prep_dma_interleaved;
 	od->ddev.device_config = omap_dma_slave_config;
 	od->ddev.device_pause = omap_dma_pause;
 	od->ddev.device_resume = omap_dma_resume;
 	od->ddev.device_terminate_all = omap_dma_terminate_all;
+	od->ddev.device_synchronize = omap_dma_synchronize;
 	od->ddev.src_addr_widths = OMAP_DMA_BUSWIDTHS;
 	od->ddev.dst_addr_widths = OMAP_DMA_BUSWIDTHS;
 	od->ddev.directions = BIT(DMA_DEV_TO_MEM) | BIT(DMA_MEM_TO_DEV);
 	od->ddev.residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
 	od->ddev.dev = &pdev->dev;
 	INIT_LIST_HEAD(&od->ddev.channels);
-	INIT_LIST_HEAD(&od->pending);
 	spin_lock_init(&od->lock);
 	spin_lock_init(&od->irq_lock);
-
-	tasklet_init(&od->task, omap_dma_sched, (unsigned long)od);
 
 	od->dma_requests = OMAP_SDMA_REQUESTS;
 	if (pdev->dev.of_node && of_property_read_u32(pdev->dev.of_node,
@@ -1199,6 +1257,10 @@ static int omap_dma_probe(struct platform_device *pdev)
 			return rc;
 	}
 
+	od->ddev.filter.map = od->plat->slave_map;
+	od->ddev.filter.mapcnt = od->plat->slavecnt;
+	od->ddev.filter.fn = omap_dma_filter_fn;
+
 	rc = dma_async_device_register(&od->ddev);
 	if (rc) {
 		pr_warn("OMAP-DMA: failed to register slave DMA engine device: %d\n",
@@ -1230,9 +1292,13 @@ static int omap_dma_probe(struct platform_device *pdev)
 static int omap_dma_remove(struct platform_device *pdev)
 {
 	struct omap_dmadev *od = platform_get_drvdata(pdev);
+	int irq;
 
 	if (pdev->dev.of_node)
 		of_dma_controller_free(pdev->dev.of_node);
+
+	irq = platform_get_irq(pdev, 1);
+	devm_free_irq(&pdev->dev, irq, od);
 
 	dma_async_device_unregister(&od->ddev);
 

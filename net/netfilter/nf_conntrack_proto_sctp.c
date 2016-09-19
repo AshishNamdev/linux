@@ -156,7 +156,7 @@ static inline struct sctp_net *sctp_pernet(struct net *net)
 }
 
 static bool sctp_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
-			      struct nf_conntrack_tuple *tuple)
+			      struct net *net, struct nf_conntrack_tuple *tuple)
 {
 	const struct sctphdr *hp;
 	struct sctphdr _hdr;
@@ -191,13 +191,7 @@ static void sctp_print_tuple(struct seq_file *s,
 /* Print out the private part of the conntrack. */
 static void sctp_print_conntrack(struct seq_file *s, struct nf_conn *ct)
 {
-	enum sctp_conntrack state;
-
-	spin_lock_bh(&ct->lock);
-	state = ct->proto.sctp.state;
-	spin_unlock_bh(&ct->lock);
-
-	seq_printf(s, "%s ", sctp_conntrack_names[state]);
+	seq_printf(s, "%s ", sctp_conntrack_names[ct->proto.sctp.state]);
 }
 
 #define for_each_sctp_chunk(skb, sch, _sch, offset, dataoff, count)	\

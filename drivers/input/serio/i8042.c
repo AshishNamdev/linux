@@ -24,6 +24,7 @@
 #include <linux/platform_device.h>
 #include <linux/i8042.h>
 #include <linux/slab.h>
+#include <linux/suspend.h>
 
 #include <asm/io.h>
 
@@ -1170,7 +1171,8 @@ static int i8042_pm_suspend(struct device *dev)
 {
 	int i;
 
-	i8042_controller_reset(true);
+	if (pm_suspend_via_firmware())
+		i8042_controller_reset(true);
 
 	/* Set up serio interrupts for system wakeup. */
 	for (i = 0; i < I8042_NUM_PORTS; i++) {
@@ -1183,8 +1185,17 @@ static int i8042_pm_suspend(struct device *dev)
 	return 0;
 }
 
+static int i8042_pm_resume_noirq(struct device *dev)
+{
+	if (!pm_resume_via_firmware())
+		i8042_interrupt(0, NULL);
+
+	return 0;
+}
+
 static int i8042_pm_resume(struct device *dev)
 {
+	bool force_reset;
 	int i;
 
 	for (i = 0; i < I8042_NUM_PORTS; i++) {
@@ -1195,11 +1206,21 @@ static int i8042_pm_resume(struct device *dev)
 	}
 
 	/*
-	 * On resume from S2R we always try to reset the controller
-	 * to bring it in a sane state. (In case of S2D we expect
-	 * BIOS to reset the controller for us.)
+	 * If platform firmware was not going to be involved in suspend, we did
+	 * not restore the controller state to whatever it had been at boot
+	 * time, so we do not need to do anything.
 	 */
-	return i8042_controller_resume(true);
+	if (!pm_suspend_via_firmware())
+		return 0;
+
+	/*
+	 * We only need to reset the controller if we are resuming after handing
+	 * off control to the platform firmware, otherwise we can simply restore
+	 * the mode.
+	 */
+	force_reset = pm_resume_via_firmware();
+
+	return i8042_controller_resume(force_reset);
 }
 
 static int i8042_pm_thaw(struct device *dev)
@@ -1223,6 +1244,7 @@ static int i8042_pm_restore(struct device *dev)
 
 static const struct dev_pm_ops i8042_pm_ops = {
 	.suspend	= i8042_pm_suspend,
+	.resume_noirq	= i8042_pm_resume_noirq,
 	.resume		= i8042_pm_resume,
 	.thaw		= i8042_pm_thaw,
 	.poweroff	= i8042_pm_reset,
@@ -1255,6 +1277,7 @@ static int __init i8042_create_kbd_port(void)
 	serio->start		= i8042_start;
 	serio->stop		= i8042_stop;
 	serio->close		= i8042_port_close;
+	serio->ps2_cmd_mutex	= &i8042_mutex;
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
 	strlcpy(serio->name, "i8042 KBD port", sizeof(serio->name));
@@ -1282,6 +1305,7 @@ static int __init i8042_create_aux_port(int idx)
 	serio->write		= i8042_aux_write;
 	serio->start		= i8042_start;
 	serio->stop		= i8042_stop;
+	serio->ps2_cmd_mutex	= &i8042_mutex;
 	serio->port_data	= port;
 	serio->dev.parent	= &i8042_platform_device->dev;
 	if (idx < 0) {
@@ -1350,21 +1374,6 @@ static void i8042_unregister_ports(void)
 		}
 	}
 }
-
-/*
- * Checks whether port belongs to i8042 controller.
- */
-bool i8042_check_port_owner(const struct serio *port)
-{
-	int i;
-
-	for (i = 0; i < I8042_NUM_PORTS; i++)
-		if (i8042_ports[i].serio == port)
-			return true;
-
-	return false;
-}
-EXPORT_SYMBOL(i8042_check_port_owner);
 
 static void i8042_free_irqs(void)
 {

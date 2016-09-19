@@ -321,7 +321,6 @@
 /* Lbtd 802.3 type */
 #define MVPP2_IP_LBDT_TYPE		0xfffa
 
-#define MVPP2_CPU_D_CACHE_LINE_SIZE	32
 #define MVPP2_TX_CSUM_MAX_SIZE		9800
 
 /* Timeout constants */
@@ -377,7 +376,7 @@
 
 #define MVPP2_RX_PKT_SIZE(mtu) \
 	ALIGN((mtu) + MVPP2_MH_SIZE + MVPP2_VLAN_TAG_LEN + \
-	      ETH_HLEN + ETH_FCS_LEN, MVPP2_CPU_D_CACHE_LINE_SIZE)
+	      ETH_HLEN + ETH_FCS_LEN, cache_line_size())
 
 #define MVPP2_RX_BUF_SIZE(pkt_size)	((pkt_size) + NET_SKB_PAD)
 #define MVPP2_RX_TOTAL_SIZE(buf_size)	((buf_size) + MVPP2_SKB_SHINFO_SIZE)
@@ -700,7 +699,6 @@ struct mvpp2_port {
 	u16 rx_ring_size;
 	struct mvpp2_pcpu_stats __percpu *stats;
 
-	struct phy_device *phy_dev;
 	phy_interface_t phy_interface;
 	struct device_node *phy_node;
 	unsigned int link;
@@ -3061,7 +3059,7 @@ static int mvpp2_prs_mac_da_accept(struct mvpp2 *priv, int port,
 
 		pe = kzalloc(sizeof(*pe), GFP_KERNEL);
 		if (!pe)
-			return -1;
+			return -ENOMEM;
 		mvpp2_prs_tcam_lu_set(pe, MVPP2_PRS_LU_MAC);
 		pe->index = tid;
 
@@ -3077,7 +3075,7 @@ static int mvpp2_prs_mac_da_accept(struct mvpp2 *priv, int port,
 	if (pmap == 0) {
 		if (add) {
 			kfree(pe);
-			return -1;
+			return -EINVAL;
 		}
 		mvpp2_prs_hw_inv(priv, pe->index);
 		priv->prs_shadow[pe->index].valid = false;
@@ -3413,16 +3411,23 @@ static void mvpp2_bm_pool_bufsize_set(struct mvpp2 *priv,
 }
 
 /* Free all buffers from the pool */
-static void mvpp2_bm_bufs_free(struct mvpp2 *priv, struct mvpp2_bm_pool *bm_pool)
+static void mvpp2_bm_bufs_free(struct device *dev, struct mvpp2 *priv,
+			       struct mvpp2_bm_pool *bm_pool)
 {
 	int i;
 
 	for (i = 0; i < bm_pool->buf_num; i++) {
+		dma_addr_t buf_phys_addr;
 		u32 vaddr;
 
 		/* Get buffer virtual address (indirect access) */
-		mvpp2_read(priv, MVPP2_BM_PHY_ALLOC_REG(bm_pool->id));
+		buf_phys_addr = mvpp2_read(priv,
+					   MVPP2_BM_PHY_ALLOC_REG(bm_pool->id));
 		vaddr = mvpp2_read(priv, MVPP2_BM_VIRT_ALLOC_REG);
+
+		dma_unmap_single(dev, buf_phys_addr,
+				 bm_pool->buf_size, DMA_FROM_DEVICE);
+
 		if (!vaddr)
 			break;
 		dev_kfree_skb_any((struct sk_buff *)vaddr);
@@ -3439,7 +3444,7 @@ static int mvpp2_bm_pool_destroy(struct platform_device *pdev,
 {
 	u32 val;
 
-	mvpp2_bm_bufs_free(priv, bm_pool);
+	mvpp2_bm_bufs_free(&pdev->dev, priv, bm_pool);
 	if (bm_pool->buf_num) {
 		WARN(1, "cannot free all buffers in pool %d\n", bm_pool->id);
 		return 0;
@@ -3692,7 +3697,8 @@ mvpp2_bm_pool_use(struct mvpp2_port *port, int pool, enum mvpp2_bm_type type,
 				   MVPP2_BM_LONG_BUF_NUM :
 				   MVPP2_BM_SHORT_BUF_NUM;
 		else
-			mvpp2_bm_bufs_free(port->priv, new_pool);
+			mvpp2_bm_bufs_free(port->dev->dev.parent,
+					   port->priv, new_pool);
 
 		new_pool->pkt_size = pkt_size;
 
@@ -3756,7 +3762,7 @@ static int mvpp2_bm_update_mtu(struct net_device *dev, int mtu)
 	int pkt_size = MVPP2_RX_PKT_SIZE(mtu);
 
 	/* Update BM pool with new buffer size */
-	mvpp2_bm_bufs_free(port->priv, port_pool);
+	mvpp2_bm_bufs_free(dev->dev.parent, port->priv, port_pool);
 	if (port_pool->buf_num) {
 		WARN(1, "cannot free all buffers in pool %d\n", port_pool->id);
 		return -EIO;
@@ -4401,11 +4407,10 @@ static void mvpp2_txq_bufs_free(struct mvpp2_port *port,
 
 		mvpp2_txq_inc_get(txq_pcpu);
 
-		if (!skb)
-			continue;
-
 		dma_unmap_single(port->dev->dev.parent, buf_phys_addr,
 				 skb_headlen(skb), DMA_TO_DEVICE);
+		if (!skb)
+			continue;
 		dev_kfree_skb_any(skb);
 	}
 }
@@ -4486,10 +4491,6 @@ static int mvpp2_aggr_txq_init(struct platform_device *pdev,
 	if (!aggr_txq->descs)
 		return -ENOMEM;
 
-	/* Make sure descriptor address is cache line size aligned  */
-	BUG_ON(aggr_txq->descs !=
-	       PTR_ALIGN(aggr_txq->descs, MVPP2_CPU_D_CACHE_LINE_SIZE));
-
 	aggr_txq->last_desc = aggr_txq->size - 1;
 
 	/* Aggr TXQ no reset WA */
@@ -4518,9 +4519,6 @@ static int mvpp2_rxq_init(struct mvpp2_port *port,
 					&rxq->descs_phys, GFP_KERNEL);
 	if (!rxq->descs)
 		return -ENOMEM;
-
-	BUG_ON(rxq->descs !=
-	       PTR_ALIGN(rxq->descs, MVPP2_CPU_D_CACHE_LINE_SIZE));
 
 	rxq->last_desc = rxq->size - 1;
 
@@ -4608,10 +4606,6 @@ static int mvpp2_txq_init(struct mvpp2_port *port,
 				&txq->descs_phys, GFP_KERNEL);
 	if (!txq->descs)
 		return -ENOMEM;
-
-	/* Make sure descriptor address is cache line size aligned  */
-	BUG_ON(txq->descs !=
-	       PTR_ALIGN(txq->descs, MVPP2_CPU_D_CACHE_LINE_SIZE));
 
 	txq->last_desc = txq->size - 1;
 
@@ -4855,7 +4849,7 @@ static irqreturn_t mvpp2_isr(int irq, void *dev_id)
 static void mvpp2_link_event(struct net_device *dev)
 {
 	struct mvpp2_port *port = netdev_priv(dev);
-	struct phy_device *phydev = port->phy_dev;
+	struct phy_device *phydev = dev->phydev;
 	int status_change = 0;
 	u32 val;
 
@@ -5092,7 +5086,8 @@ static int mvpp2_rx(struct mvpp2_port *port, int rx_todo,
 		    struct mvpp2_rx_queue *rxq)
 {
 	struct net_device *dev = port->dev;
-	int rx_received, rx_filled, i;
+	int rx_received;
+	int rx_done = 0;
 	u32 rcvd_pkts = 0;
 	u32 rcvd_bytes = 0;
 
@@ -5101,17 +5096,18 @@ static int mvpp2_rx(struct mvpp2_port *port, int rx_todo,
 	if (rx_todo > rx_received)
 		rx_todo = rx_received;
 
-	rx_filled = 0;
-	for (i = 0; i < rx_todo; i++) {
+	while (rx_done < rx_todo) {
 		struct mvpp2_rx_desc *rx_desc = mvpp2_rxq_next_desc_get(rxq);
 		struct mvpp2_bm_pool *bm_pool;
 		struct sk_buff *skb;
+		dma_addr_t phys_addr;
 		u32 bm, rx_status;
 		int pool, rx_bytes, err;
 
-		rx_filled++;
+		rx_done++;
 		rx_status = rx_desc->status;
 		rx_bytes = rx_desc->data_size - MVPP2_MH_SIZE;
+		phys_addr = rx_desc->buf_phys_addr;
 
 		bm = mvpp2_bm_cookie_build(rx_desc);
 		pool = mvpp2_bm_cookie_pool_get(bm);
@@ -5128,14 +5124,25 @@ static int mvpp2_rx(struct mvpp2_port *port, int rx_todo,
 		 * comprised by the RX descriptor.
 		 */
 		if (rx_status & MVPP2_RXD_ERR_SUMMARY) {
+		err_drop_frame:
 			dev->stats.rx_errors++;
 			mvpp2_rx_error(port, rx_desc);
+			/* Return the buffer to the pool */
 			mvpp2_pool_refill(port, bm, rx_desc->buf_phys_addr,
 					  rx_desc->buf_cookie);
 			continue;
 		}
 
 		skb = (struct sk_buff *)rx_desc->buf_cookie;
+
+		err = mvpp2_rx_refill(port, bm_pool, bm, 0);
+		if (err) {
+			netdev_err(port->dev, "failed to refill BM pools\n");
+			goto err_drop_frame;
+		}
+
+		dma_unmap_single(dev->dev.parent, phys_addr,
+				 bm_pool->buf_size, DMA_FROM_DEVICE);
 
 		rcvd_pkts++;
 		rcvd_bytes += rx_bytes;
@@ -5147,12 +5154,6 @@ static int mvpp2_rx(struct mvpp2_port *port, int rx_todo,
 		mvpp2_rx_csum(port, rx_status, skb);
 
 		napi_gro_receive(&port->napi, skb);
-
-		err = mvpp2_rx_refill(port, bm_pool, bm, 0);
-		if (err) {
-			netdev_err(port->dev, "failed to refill BM pools\n");
-			rx_filled--;
-		}
 	}
 
 	if (rcvd_pkts) {
@@ -5166,7 +5167,7 @@ static int mvpp2_rx(struct mvpp2_port *port, int rx_todo,
 
 	/* Update Rx queue management counters */
 	wmb();
-	mvpp2_rxq_status_update(port, rxq->id, rx_todo, rx_filled);
+	mvpp2_rxq_status_update(port, rxq->id, rx_done, rx_done);
 
 	return rx_todo;
 }
@@ -5414,6 +5415,8 @@ static int mvpp2_poll(struct napi_struct *napi, int budget)
 /* Set hw internals when starting port */
 static void mvpp2_start_dev(struct mvpp2_port *port)
 {
+	struct net_device *ndev = port->dev;
+
 	mvpp2_gmac_max_rx_size_set(port);
 	mvpp2_txp_max_tx_size_set(port);
 
@@ -5423,13 +5426,15 @@ static void mvpp2_start_dev(struct mvpp2_port *port)
 	mvpp2_interrupts_enable(port);
 
 	mvpp2_port_enable(port);
-	phy_start(port->phy_dev);
+	phy_start(ndev->phydev);
 	netif_tx_start_all_queues(port->dev);
 }
 
 /* Set hw internals when stopping port */
 static void mvpp2_stop_dev(struct mvpp2_port *port)
 {
+	struct net_device *ndev = port->dev;
+
 	/* Stop new packets from arriving to RXQs */
 	mvpp2_ingress_disable(port);
 
@@ -5445,7 +5450,7 @@ static void mvpp2_stop_dev(struct mvpp2_port *port)
 
 	mvpp2_egress_disable(port);
 	mvpp2_port_disable(port);
-	phy_stop(port->phy_dev);
+	phy_stop(ndev->phydev);
 }
 
 /* Return positive if MTU is valid */
@@ -5533,7 +5538,6 @@ static int mvpp2_phy_connect(struct mvpp2_port *port)
 	phy_dev->supported &= PHY_GBIT_FEATURES;
 	phy_dev->advertising = phy_dev->supported;
 
-	port->phy_dev = phy_dev;
 	port->link    = 0;
 	port->duplex  = 0;
 	port->speed   = 0;
@@ -5543,8 +5547,9 @@ static int mvpp2_phy_connect(struct mvpp2_port *port)
 
 static void mvpp2_phy_disconnect(struct mvpp2_port *port)
 {
-	phy_disconnect(port->phy_dev);
-	port->phy_dev = NULL;
+	struct net_device *ndev = port->dev;
+
+	phy_disconnect(ndev->phydev);
 }
 
 static int mvpp2_open(struct net_device *dev)
@@ -5794,13 +5799,12 @@ mvpp2_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 
 static int mvpp2_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
-	struct mvpp2_port *port = netdev_priv(dev);
 	int ret;
 
-	if (!port->phy_dev)
+	if (!dev->phydev)
 		return -ENOTSUPP;
 
-	ret = phy_mii_ioctl(port->phy_dev, ifr, cmd);
+	ret = phy_mii_ioctl(dev->phydev, ifr, cmd);
 	if (!ret)
 		mvpp2_link_event(dev);
 
@@ -5808,28 +5812,6 @@ static int mvpp2_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 }
 
 /* Ethtool methods */
-
-/* Get settings (phy address, speed) for ethtools */
-static int mvpp2_ethtool_get_settings(struct net_device *dev,
-				      struct ethtool_cmd *cmd)
-{
-	struct mvpp2_port *port = netdev_priv(dev);
-
-	if (!port->phy_dev)
-		return -ENODEV;
-	return phy_ethtool_gset(port->phy_dev, cmd);
-}
-
-/* Set settings (phy address, speed) for ethtools */
-static int mvpp2_ethtool_set_settings(struct net_device *dev,
-				      struct ethtool_cmd *cmd)
-{
-	struct mvpp2_port *port = netdev_priv(dev);
-
-	if (!port->phy_dev)
-		return -ENODEV;
-	return phy_ethtool_sset(port->phy_dev, cmd);
-}
 
 /* Set interrupt coalescing for ethtools */
 static int mvpp2_ethtool_set_coalesce(struct net_device *dev,
@@ -5965,13 +5947,13 @@ static const struct net_device_ops mvpp2_netdev_ops = {
 
 static const struct ethtool_ops mvpp2_eth_tool_ops = {
 	.get_link	= ethtool_op_get_link,
-	.get_settings	= mvpp2_ethtool_get_settings,
-	.set_settings	= mvpp2_ethtool_set_settings,
 	.set_coalesce	= mvpp2_ethtool_set_coalesce,
 	.get_coalesce	= mvpp2_ethtool_get_coalesce,
 	.get_drvinfo	= mvpp2_ethtool_get_drvinfo,
 	.get_ringparam	= mvpp2_ethtool_get_ringparam,
 	.set_ringparam	= mvpp2_ethtool_set_ringparam,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
+	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 };
 
 /* Driver initialization */
@@ -6045,8 +6027,10 @@ static int mvpp2_port_init(struct mvpp2_port *port)
 
 		/* Map physical Rx queue to port's logical Rx queue */
 		rxq = devm_kzalloc(dev, sizeof(*rxq), GFP_KERNEL);
-		if (!rxq)
+		if (!rxq) {
+			err = -ENOMEM;
 			goto err_free_percpu;
+		}
 		/* Map this Rx queue to a physical queue */
 		rxq->id = port->first_rxq + queue;
 		rxq->port = port->id;
@@ -6250,6 +6234,7 @@ err_free_stats:
 err_free_irq:
 	irq_dispose_mapping(port->irq);
 err_free_netdev:
+	of_node_put(phy_node);
 	free_netdev(dev);
 	return err;
 }
@@ -6260,6 +6245,7 @@ static void mvpp2_port_remove(struct mvpp2_port *port)
 	int i;
 
 	unregister_netdev(port->dev);
+	of_node_put(port->phy_node);
 	free_percpu(port->pcpu);
 	free_percpu(port->stats);
 	for (i = 0; i < txq_number; i++)

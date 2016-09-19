@@ -64,16 +64,34 @@ void blk_exit_rl(struct request_list *rl);
 void init_request_from_bio(struct request *req, struct bio *bio);
 void blk_rq_bio_prep(struct request_queue *q, struct request *rq,
 			struct bio *bio);
-int blk_rq_append_bio(struct request_queue *q, struct request *rq,
-		      struct bio *bio);
 void blk_queue_bypass_start(struct request_queue *q);
 void blk_queue_bypass_end(struct request_queue *q);
 void blk_dequeue_request(struct request *rq);
 void __blk_queue_free_tags(struct request_queue *q);
 bool __blk_end_bidi_request(struct request *rq, int error,
 			    unsigned int nr_bytes, unsigned int bidi_bytes);
+void blk_freeze_queue(struct request_queue *q);
 
-void blk_rq_timed_out_timer(unsigned long data);
+static inline void blk_queue_enter_live(struct request_queue *q)
+{
+	/*
+	 * Given that running in generic_make_request() context
+	 * guarantees that a live reference against q_usage_counter has
+	 * been established, further references under that same context
+	 * need not check that the queue has been frozen (marked dead).
+	 */
+	percpu_ref_get(&q->q_usage_counter);
+}
+
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+void blk_flush_integrity(void);
+#else
+static inline void blk_flush_integrity(void)
+{
+}
+#endif
+
+void blk_timeout_work(struct work_struct *work);
 unsigned long blk_rq_timeout(unsigned long timeout);
 void blk_add_timer(struct request *req);
 void blk_delete_timer(struct request *);
@@ -86,6 +104,7 @@ bool bio_attempt_back_merge(struct request_queue *q, struct request *req,
 bool blk_attempt_plug_merge(struct request_queue *q, struct bio *bio,
 			    unsigned int *request_count,
 			    struct request **same_queue_rq);
+unsigned int blk_plug_queued_count(struct request_queue *q);
 
 void blk_account_io_start(struct request *req, bool new_io);
 void blk_account_io_completion(struct request *req, unsigned int bytes);

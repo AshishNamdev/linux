@@ -17,15 +17,16 @@
 # define __release(x)	__context__(x,-1)
 # define __cond_lock(x,c)	((c) ? ({ __acquire(x); 1; }) : 0)
 # define __percpu	__attribute__((noderef, address_space(3)))
-# define __pmem		__attribute__((noderef, address_space(5)))
 #ifdef CONFIG_SPARSE_RCU_POINTER
 # define __rcu		__attribute__((noderef, address_space(4)))
-#else
+#else /* CONFIG_SPARSE_RCU_POINTER */
 # define __rcu
-#endif
+#endif /* CONFIG_SPARSE_RCU_POINTER */
+# define __private	__attribute__((noderef))
 extern void __chk_user_ptr(const volatile void __user *);
 extern void __chk_io_ptr(const volatile void __iomem *);
-#else
+# define ACCESS_PRIVATE(p, member) (*((typeof((p)->member) __force *) &(p)->member))
+#else /* __CHECKER__ */
 # define __user
 # define __kernel
 # define __safe
@@ -43,8 +44,9 @@ extern void __chk_io_ptr(const volatile void __iomem *);
 # define __cond_lock(x,c) (c)
 # define __percpu
 # define __rcu
-# define __pmem
-#endif
+# define __private
+# define ACCESS_PRIVATE(p, member) ((p)->member)
+#endif /* __CHECKER__ */
 
 /* Indirect macros required for expanded argument pasting, eg. __LINE__. */
 #define ___PASTE(a,b) a##b
@@ -56,7 +58,7 @@ extern void __chk_io_ptr(const volatile void __iomem *);
 #include <linux/compiler-gcc.h>
 #endif
 
-#ifdef CC_USING_HOTPATCH
+#if defined(CC_USING_HOTPATCH) && !defined(__CHECKER__)
 #define notrace __attribute__((hotpatch(0,0)))
 #else
 #define notrace __attribute__((no_instrument_function))
@@ -144,7 +146,7 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
  */
 #define if(cond, ...) __trace_if( (cond , ## __VA_ARGS__) )
 #define __trace_if(cond) \
-	if (__builtin_constant_p((cond)) ? !!(cond) :			\
+	if (__builtin_constant_p(!!(cond)) ? !!(cond) :			\
 	({								\
 		int ______r;						\
 		static struct ftrace_branch_data			\
@@ -198,19 +200,45 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 
 #include <uapi/linux/types.h>
 
-static __always_inline void __read_once_size(const volatile void *p, void *res, int size)
+#define __READ_ONCE_SIZE						\
+({									\
+	switch (size) {							\
+	case 1: *(__u8 *)res = *(volatile __u8 *)p; break;		\
+	case 2: *(__u16 *)res = *(volatile __u16 *)p; break;		\
+	case 4: *(__u32 *)res = *(volatile __u32 *)p; break;		\
+	case 8: *(__u64 *)res = *(volatile __u64 *)p; break;		\
+	default:							\
+		barrier();						\
+		__builtin_memcpy((void *)res, (const void *)p, size);	\
+		barrier();						\
+	}								\
+})
+
+static __always_inline
+void __read_once_size(const volatile void *p, void *res, int size)
 {
-	switch (size) {
-	case 1: *(__u8 *)res = *(volatile __u8 *)p; break;
-	case 2: *(__u16 *)res = *(volatile __u16 *)p; break;
-	case 4: *(__u32 *)res = *(volatile __u32 *)p; break;
-	case 8: *(__u64 *)res = *(volatile __u64 *)p; break;
-	default:
-		barrier();
-		__builtin_memcpy((void *)res, (const void *)p, size);
-		barrier();
-	}
+	__READ_ONCE_SIZE;
 }
+
+#ifdef CONFIG_KASAN
+/*
+ * This function is not 'inline' because __no_sanitize_address confilcts
+ * with inlining. Attempt to inline it may cause a build failure.
+ * 	https://gcc.gnu.org/bugzilla/show_bug.cgi?id=67368
+ * '__maybe_unused' allows us to avoid defined-but-not-used warnings.
+ */
+static __no_sanitize_address __maybe_unused
+void __read_once_size_nocheck(const volatile void *p, void *res, int size)
+{
+	__READ_ONCE_SIZE;
+}
+#else
+static __always_inline
+void __read_once_size_nocheck(const volatile void *p, void *res, int size)
+{
+	__READ_ONCE_SIZE;
+}
+#endif
 
 static __always_inline void __write_once_size(volatile void *p, void *res, int size)
 {
@@ -237,8 +265,9 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
  * In contrast to ACCESS_ONCE these two macros will also work on aggregate
  * data types like structs or unions. If the size of the accessed data
  * type exceeds the word size of the machine (e.g., 32 bits or 64 bits)
- * READ_ONCE() and WRITE_ONCE()  will fall back to memcpy and print a
- * compile-time warning.
+ * READ_ONCE() and WRITE_ONCE() will fall back to memcpy(). There's at
+ * least two memcpy()s: one for the __builtin_memcpy() and then one for
+ * the macro doing the copy of variable - '__u' allocated on the stack.
  *
  * Their two major use cases are: (1) Mediating communication between
  * process-level code and irq/NMI handlers, all running on the same CPU,
@@ -248,8 +277,22 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
  * required ordering.
  */
 
-#define READ_ONCE(x) \
-	({ union { typeof(x) __val; char __c[1]; } __u; __read_once_size(&(x), __u.__c, sizeof(x)); __u.__val; })
+#define __READ_ONCE(x, check)						\
+({									\
+	union { typeof(x) __val; char __c[1]; } __u;			\
+	if (check)							\
+		__read_once_size(&(x), __u.__c, sizeof(x));		\
+	else								\
+		__read_once_size_nocheck(&(x), __u.__c, sizeof(x));	\
+	__u.__val;							\
+})
+#define READ_ONCE(x) __READ_ONCE(x, 1)
+
+/*
+ * Use READ_ONCE_NOCHECK() instead of READ_ONCE() if you need
+ * to hide memory access from KASAN.
+ */
+#define READ_ONCE_NOCHECK(x) __READ_ONCE(x, 0)
 
 #define WRITE_ONCE(x, val) \
 ({							\
@@ -257,22 +300,6 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 		{ .__val = (__force typeof(x)) (val) }; \
 	__write_once_size(&(x), __u.__c, sizeof(x));	\
 	__u.__val;					\
-})
-
-/**
- * READ_ONCE_CTRL - Read a value heading a control dependency
- * @x: The value to be read, heading the control dependency
- *
- * Control dependencies are tricky.  See Documentation/memory-barriers.txt
- * for important information on how to use them.  Note that in many cases,
- * use of smp_load_acquire() will be much simpler.  Control dependencies
- * should be avoided except on the hottest of hotpaths.
- */
-#define READ_ONCE_CTRL(x) \
-({ \
-	typeof(x) __val = READ_ONCE(x); \
-	smp_read_barrier_depends(); /* Enforce control dependency. */ \
-	__val; \
 })
 
 #endif /* __KERNEL__ */
@@ -309,6 +336,10 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 #undef __deprecated_for_modules
 #define __deprecated
 #define __deprecated_for_modules
+#endif
+
+#ifndef __malloc
+#define __malloc
 #endif
 
 /*
@@ -392,6 +423,14 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 #ifndef __visible
 #define __visible
 #endif
+
+/*
+ * Assume alignment of return value.
+ */
+#ifndef __assume_aligned
+#define __assume_aligned(a, ...)
+#endif
+
 
 /* Are two types/vars the same type (ignoring qualifiers)? */
 #ifndef __same_type
@@ -487,10 +526,15 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
  * Similar to rcu_dereference(), but for situations where the pointed-to
  * object's lifetime is managed by something other than RCU.  That
  * "something other" might be reference counting or simple immortality.
+ *
+ * The seemingly unused variable ___typecheck_p validates that @p is
+ * indeed a pointer type by using a pointer to typeof(*p) as the type.
+ * Taking a pointer to typeof(*p) again is needed in case p is void *.
  */
 #define lockless_dereference(p) \
 ({ \
 	typeof(p) _________p1 = READ_ONCE(p); \
+	typeof(*(p)) *___typecheck_p __maybe_unused; \
 	smp_read_barrier_depends(); /* Dependency order vs. p above. */ \
 	(_________p1); \
 })

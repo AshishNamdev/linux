@@ -100,12 +100,12 @@ static int a21_wdt_set_timeout(struct watchdog_device *wdt,
 	struct a21_wdt_drv *drv = watchdog_get_drvdata(wdt);
 
 	if (timeout != 1 && timeout != 30) {
-		dev_err(wdt->dev, "Only 1 and 30 allowed as timeout\n");
+		dev_err(wdt->parent, "Only 1 and 30 allowed as timeout\n");
 		return -EINVAL;
 	}
 
 	if (timeout == 30 && wdt->timeout == 1) {
-		dev_err(wdt->dev,
+		dev_err(wdt->parent,
 			"Transition from fast to slow mode not allowed\n");
 		return -EINVAL;
 	}
@@ -253,6 +253,7 @@ static const struct of_device_id a21_wdt_ids[] = {
 	{ .compatible = "men,a021-wdt" },
 	{ },
 };
+MODULE_DEVICE_TABLE(of, a21_wdt_ids);
 
 static struct platform_driver a21_wdt_driver = {
 	.probe = a21_wdt_probe,

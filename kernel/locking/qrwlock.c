@@ -86,20 +86,20 @@ void queued_read_lock_slowpath(struct qrwlock *lock, u32 cnts)
 	/*
 	 * Put the reader into the wait queue
 	 */
-	arch_spin_lock(&lock->lock);
+	arch_spin_lock(&lock->wait_lock);
 
 	/*
 	 * The ACQUIRE semantics of the following spinning code ensure
 	 * that accesses can't leak upwards out of our subsequent critical
 	 * section in the case that the lock is currently held for write.
 	 */
-	cnts = atomic_add_return_acquire(_QR_BIAS, &lock->cnts) - _QR_BIAS;
+	cnts = atomic_fetch_add_acquire(_QR_BIAS, &lock->cnts);
 	rspin_until_writer_unlock(lock, cnts);
 
 	/*
 	 * Signal the next one in queue to become queue head
 	 */
-	arch_spin_unlock(&lock->lock);
+	arch_spin_unlock(&lock->wait_lock);
 }
 EXPORT_SYMBOL(queued_read_lock_slowpath);
 
@@ -112,7 +112,7 @@ void queued_write_lock_slowpath(struct qrwlock *lock)
 	u32 cnts;
 
 	/* Put the writer into the wait queue */
-	arch_spin_lock(&lock->lock);
+	arch_spin_lock(&lock->wait_lock);
 
 	/* Try to acquire the lock directly if no reader is present */
 	if (!atomic_read(&lock->cnts) &&
@@ -144,6 +144,6 @@ void queued_write_lock_slowpath(struct qrwlock *lock)
 		cpu_relax_lowlatency();
 	}
 unlock:
-	arch_spin_unlock(&lock->lock);
+	arch_spin_unlock(&lock->wait_lock);
 }
 EXPORT_SYMBOL(queued_write_lock_slowpath);

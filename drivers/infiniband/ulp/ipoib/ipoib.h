@@ -80,7 +80,7 @@ enum {
 	IPOIB_NUM_WC		  = 4,
 
 	IPOIB_MAX_PATH_REC_QUEUE  = 3,
-	IPOIB_MAX_MCAST_QUEUE	  = 3,
+	IPOIB_MAX_MCAST_QUEUE	  = 64,
 
 	IPOIB_FLAG_OPER_UP	  = 0,
 	IPOIB_FLAG_INITIALIZED	  = 1,
@@ -92,6 +92,9 @@ enum {
 	IPOIB_FLAG_UMCAST	  = 10,
 	IPOIB_STOP_NEIGH_GC	  = 11,
 	IPOIB_NEIGH_TBL_FLUSH	  = 12,
+	IPOIB_FLAG_DEV_ADDR_SET	  = 13,
+	IPOIB_FLAG_DEV_ADDR_CTRL  = 14,
+	IPOIB_FLAG_GOING_DOWN	  = 15,
 
 	IPOIB_MAX_BACKOFF_SECONDS = 16,
 
@@ -244,6 +247,7 @@ struct ipoib_cm_tx {
 	unsigned	     tx_tail;
 	unsigned long	     flags;
 	u32		     mtu;
+	unsigned             max_send_sge;
 };
 
 struct ipoib_cm_rx_buf {
@@ -360,7 +364,7 @@ struct ipoib_dev_priv {
 	unsigned	     tx_head;
 	unsigned	     tx_tail;
 	struct ib_sge	     tx_sge[MAX_SKB_FRAGS + 1];
-	struct ib_send_wr    tx_wr;
+	struct ib_ud_wr      tx_wr;
 	unsigned	     tx_outstanding;
 	struct ib_wc	     send_wc[MAX_SEND_CQE];
 
@@ -387,9 +391,11 @@ struct ipoib_dev_priv {
 	struct dentry *mcg_dentry;
 	struct dentry *path_dentry;
 #endif
-	int	hca_caps;
+	u64	hca_caps;
 	struct ipoib_ethtool_st ethtool;
 	struct timer_list poll_timer;
+	unsigned max_send_sge;
+	bool sm_fullmember_sendonly_support;
 };
 
 struct ipoib_ah {
@@ -472,8 +478,10 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 		struct ipoib_ah *address, u32 qpn);
 void ipoib_reap_ah(struct work_struct *work);
 
+struct ipoib_path *__path_find(struct net_device *dev, void *gid);
 void ipoib_mark_paths_invalid(struct net_device *dev);
 void ipoib_flush_paths(struct net_device *dev);
+int ipoib_check_sm_sendonly_fullmember_support(struct ipoib_dev_priv *priv);
 struct ipoib_dev_priv *ipoib_intf_alloc(const char *format);
 
 int ipoib_ib_dev_init(struct net_device *dev, struct ib_device *ca, int port);
@@ -527,7 +535,7 @@ static inline void ipoib_build_sge(struct ipoib_dev_priv *priv,
 		priv->tx_sge[i + off].addr = mapping[i + off];
 		priv->tx_sge[i + off].length = skb_frag_size(&frags[i]);
 	}
-	priv->tx_wr.num_sge	     = nr_frags + off;
+	priv->tx_wr.wr.num_sge	     = nr_frags + off;
 }
 
 #ifdef CONFIG_INFINIBAND_IPOIB_DEBUG
@@ -548,6 +556,9 @@ void ipoib_path_iter_read(struct ipoib_path_iter *iter,
 
 int ipoib_mcast_attach(struct net_device *dev, u16 mlid,
 		       union ib_gid *mgid, int set_qkey);
+void ipoib_mcast_remove_list(struct list_head *remove_list);
+void ipoib_check_and_add_mcast_sendonly(struct ipoib_dev_priv *priv, u8 *mgid,
+				struct list_head *remove_list);
 
 int ipoib_init_qp(struct net_device *dev);
 int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca);

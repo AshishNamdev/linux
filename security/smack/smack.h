@@ -90,8 +90,14 @@ struct superblock_smack {
 	struct smack_known	*smk_floor;
 	struct smack_known	*smk_hat;
 	struct smack_known	*smk_default;
-	int			smk_initialized;
+	int			smk_flags;
 };
+
+/*
+ * Superblock flags
+ */
+#define SMK_SB_INITIALIZED	0x01
+#define SMK_SB_UNTRUSTED	0x02
 
 struct socket_smack {
 	struct smack_known	*smk_out;	/* outbound label */
@@ -115,6 +121,7 @@ struct task_smack {
 	struct smack_known	*smk_forked;	/* label when forked */
 	struct list_head	smk_rules;	/* per task access rules */
 	struct mutex		smk_rules_lock;	/* lock for the rules */
+	struct list_head	smk_relabel;	/* transit allowed labels */
 };
 
 #define	SMK_INODE_INSTANT	0x01	/* inode is instantiated */
@@ -169,7 +176,7 @@ struct smk_port_label {
 };
 #endif /* SMACK_IPV6_PORT_LABELING */
 
-struct smack_onlycap {
+struct smack_known_list_elem {
 	struct list_head	list;
 	struct smack_known	*smk_label;
 };
@@ -301,6 +308,7 @@ struct smack_known *smk_import_entry(const char *, int);
 void smk_insert_entry(struct smack_known *skp);
 struct smack_known *smk_find_entry(const char *);
 int smack_privileged(int cap);
+void smk_destroy_label_list(struct list_head *list);
 
 /*
  * Shared data.

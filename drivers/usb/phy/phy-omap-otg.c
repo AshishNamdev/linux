@@ -105,7 +105,6 @@ static int omap_otg_probe(struct platform_device *pdev)
 	extcon = extcon_get_extcon_dev(config->extcon);
 	if (!extcon)
 		return -EPROBE_DEFER;
-	otg_dev->extcon = extcon;
 
 	otg_dev = devm_kzalloc(&pdev->dev, sizeof(*otg_dev), GFP_KERNEL);
 	if (!otg_dev)
@@ -115,6 +114,7 @@ static int omap_otg_probe(struct platform_device *pdev)
 	if (IS_ERR(otg_dev->base))
 		return PTR_ERR(otg_dev->base);
 
+	otg_dev->extcon = extcon;
 	otg_dev->id_nb.notifier_call = omap_otg_id_notifier;
 	otg_dev->vbus_nb.notifier_call = omap_otg_vbus_notifier;
 
@@ -140,6 +140,8 @@ static int omap_otg_probe(struct platform_device *pdev)
 		 (rev >> 4) & 0xf, rev & 0xf, config->extcon, otg_dev->id,
 		 otg_dev->vbus);
 
+	platform_set_drvdata(pdev, otg_dev);
+
 	return 0;
 }
 
@@ -148,7 +150,7 @@ static int omap_otg_remove(struct platform_device *pdev)
 	struct otg_device *otg_dev = platform_get_drvdata(pdev);
 	struct extcon_dev *edev = otg_dev->extcon;
 
-	extcon_unregister_notifier(edev, EXTCON_USB_HOST,&otg_dev->id_nb);
+	extcon_unregister_notifier(edev, EXTCON_USB_HOST, &otg_dev->id_nb);
 	extcon_unregister_notifier(edev, EXTCON_USB, &otg_dev->vbus_nb);
 
 	return 0;

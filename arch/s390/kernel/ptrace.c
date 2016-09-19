@@ -84,7 +84,7 @@ void update_cr_regs(struct task_struct *task)
 		if (test_tsk_thread_flag(task, TIF_UPROBE_SINGLESTEP))
 			new.control |= PER_EVENT_IFETCH;
 		new.start = 0;
-		new.end = PSW_ADDR_INSN;
+		new.end = -1UL;
 	}
 
 	/* Take care of the PER enablement bit in the PSW. */
@@ -148,7 +148,7 @@ static inline unsigned long __peek_user_per(struct task_struct *child,
 	else if (addr == (addr_t) &dummy->cr11)
 		/* End address of the active per set. */
 		return test_thread_flag(TIF_SINGLE_STEP) ?
-			PSW_ADDR_INSN : child->thread.per_user.end;
+			-1UL : child->thread.per_user.end;
 	else if (addr == (addr_t) &dummy->bits)
 		/* Single-step bit. */
 		return test_thread_flag(TIF_SINGLE_STEP) ?
@@ -239,12 +239,12 @@ static unsigned long __peek_user(struct task_struct *child, addr_t addr)
 		 * or the child->thread.fpu.vxrs array
 		 */
 		offset = addr - (addr_t) &dummy->regs.fp_regs.fprs;
-		if (is_vx_task(child))
+		if (MACHINE_HAS_VX)
 			tmp = *(addr_t *)
 			       ((addr_t) child->thread.fpu.vxrs + 2*offset);
 		else
 			tmp = *(addr_t *)
-			       ((addr_t) &child->thread.fpu.fprs + offset);
+			       ((addr_t) child->thread.fpu.fprs + offset);
 
 	} else if (addr < (addr_t) (&dummy->regs.per_info + 1)) {
 		/*
@@ -383,12 +383,12 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		 * or the child->thread.fpu.vxrs array
 		 */
 		offset = addr - (addr_t) &dummy->regs.fp_regs.fprs;
-		if (is_vx_task(child))
+		if (MACHINE_HAS_VX)
 			*(addr_t *)((addr_t)
 				child->thread.fpu.vxrs + 2*offset) = data;
 		else
 			*(addr_t *)((addr_t)
-				&child->thread.fpu.fprs + offset) = data;
+				child->thread.fpu.fprs + offset) = data;
 
 	} else if (addr < (addr_t) (&dummy->regs.per_info + 1)) {
 		/*
@@ -495,8 +495,6 @@ long arch_ptrace(struct task_struct *child, long request,
 		}
 		return 0;
 	default:
-		/* Removing high order bit from addr (only for 31 bit). */
-		addr &= PSW_ADDR_INSN;
 		return ptrace_request(child, request, addr, data);
 	}
 }
@@ -617,12 +615,12 @@ static u32 __peek_user_compat(struct task_struct *child, addr_t addr)
 		 * or the child->thread.fpu.vxrs array
 		 */
 		offset = addr - (addr_t) &dummy32->regs.fp_regs.fprs;
-		if (is_vx_task(child))
+		if (MACHINE_HAS_VX)
 			tmp = *(__u32 *)
 			       ((addr_t) child->thread.fpu.vxrs + 2*offset);
 		else
 			tmp = *(__u32 *)
-			       ((addr_t) &child->thread.fpu.fprs + offset);
+			       ((addr_t) child->thread.fpu.fprs + offset);
 
 	} else if (addr < (addr_t) (&dummy32->regs.per_info + 1)) {
 		/*
@@ -742,12 +740,12 @@ static int __poke_user_compat(struct task_struct *child,
 		 * or the child->thread.fpu.vxrs array
 		 */
 		offset = addr - (addr_t) &dummy32->regs.fp_regs.fprs;
-		if (is_vx_task(child))
+		if (MACHINE_HAS_VX)
 			*(__u32 *)((addr_t)
 				child->thread.fpu.vxrs + 2*offset) = tmp;
 		else
 			*(__u32 *)((addr_t)
-				&child->thread.fpu.fprs + offset) = tmp;
+				child->thread.fpu.fprs + offset) = tmp;
 
 	} else if (addr < (addr_t) (&dummy32->regs.per_info + 1)) {
 		/*
@@ -823,14 +821,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 
 asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 {
-	long ret = 0;
-
-	/* Do the secure computing check first. */
-	if (secure_computing()) {
-		/* seccomp failures shouldn't expose any additional code. */
-		ret = -1;
-		goto out;
-	}
+	unsigned long mask = -1UL;
 
 	/*
 	 * The sysc_tracesys code in entry.S stored the system
@@ -845,17 +836,26 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 		 * the system call and the system call restart handling.
 		 */
 		clear_pt_regs_flag(regs, PIF_SYSCALL);
-		ret = -1;
+		return -1;
+	}
+
+	/* Do the secure computing check after ptrace. */
+	if (secure_computing(NULL)) {
+		/* seccomp failures shouldn't expose any additional code. */
+		return -1;
 	}
 
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->gprs[2]);
 
-	audit_syscall_entry(regs->gprs[2], regs->orig_gpr2,
-			    regs->gprs[3], regs->gprs[4],
-			    regs->gprs[5]);
-out:
-	return ret ?: regs->gprs[2];
+	if (is_compat_task())
+		mask = 0xffffffff;
+
+	audit_syscall_entry(regs->gprs[2], regs->orig_gpr2 & mask,
+			    regs->gprs[3] &mask, regs->gprs[4] &mask,
+			    regs->gprs[5] &mask);
+
+	return regs->gprs[2];
 }
 
 asmlinkage void do_syscall_trace_exit(struct pt_regs *regs)
@@ -981,7 +981,7 @@ static int s390_fpregs_set(struct task_struct *target,
 	if (rc)
 		return rc;
 
-	if (is_vx_task(target))
+	if (MACHINE_HAS_VX)
 		convert_fp_to_vx(target->thread.fpu.vxrs, fprs);
 	else
 		memcpy(target->thread.fpu.fprs, &fprs, sizeof(fprs));
@@ -1047,13 +1047,10 @@ static int s390_vxrs_low_get(struct task_struct *target,
 
 	if (!MACHINE_HAS_VX)
 		return -ENODEV;
-	if (is_vx_task(target)) {
-		if (target == current)
-			save_fpu_regs();
-		for (i = 0; i < __NUM_VXRS_LOW; i++)
-			vxrs[i] = *((__u64 *)(target->thread.fpu.vxrs + i) + 1);
-	} else
-		memset(vxrs, 0, sizeof(vxrs));
+	if (target == current)
+		save_fpu_regs();
+	for (i = 0; i < __NUM_VXRS_LOW; i++)
+		vxrs[i] = *((__u64 *)(target->thread.fpu.vxrs + i) + 1);
 	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
 }
 
@@ -1067,11 +1064,7 @@ static int s390_vxrs_low_set(struct task_struct *target,
 
 	if (!MACHINE_HAS_VX)
 		return -ENODEV;
-	if (!is_vx_task(target)) {
-		rc = alloc_vector_registers(target);
-		if (rc)
-			return rc;
-	} else if (target == current)
+	if (target == current)
 		save_fpu_regs();
 
 	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
@@ -1091,13 +1084,10 @@ static int s390_vxrs_high_get(struct task_struct *target,
 
 	if (!MACHINE_HAS_VX)
 		return -ENODEV;
-	if (is_vx_task(target)) {
-		if (target == current)
-			save_fpu_regs();
-		memcpy(vxrs, target->thread.fpu.vxrs + __NUM_VXRS_LOW,
-		       sizeof(vxrs));
-	} else
-		memset(vxrs, 0, sizeof(vxrs));
+	if (target == current)
+		save_fpu_regs();
+	memcpy(vxrs, target->thread.fpu.vxrs + __NUM_VXRS_LOW, sizeof(vxrs));
+
 	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
 }
 
@@ -1110,11 +1100,7 @@ static int s390_vxrs_high_set(struct task_struct *target,
 
 	if (!MACHINE_HAS_VX)
 		return -ENODEV;
-	if (!is_vx_task(target)) {
-		rc = alloc_vector_registers(target);
-		if (rc)
-			return rc;
-	} else if (target == current)
+	if (target == current)
 		save_fpu_regs();
 
 	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,

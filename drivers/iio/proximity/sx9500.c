@@ -492,7 +492,7 @@ static void sx9500_push_events(struct iio_dev *indio_dev)
 		dir = new_prox ? IIO_EV_DIR_FALLING : IIO_EV_DIR_RISING;
 		ev = IIO_UNMOD_EVENT_CODE(IIO_PROXIMITY, chan,
 					  IIO_EV_TYPE_THRESH, dir);
-		iio_push_event(indio_dev, ev, iio_get_time_ns());
+		iio_push_event(indio_dev, ev, iio_get_time_ns(indio_dev));
 		data->prox_stat[chan] = new_prox;
 	}
 }
@@ -669,7 +669,7 @@ static irqreturn_t sx9500_trigger_handler(int irq, void *private)
 	}
 
 	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
-					   iio_get_time_ns());
+					   iio_get_time_ns(indio_dev));
 
 out:
 	mutex_unlock(&data->mutex);
@@ -868,20 +868,11 @@ static void sx9500_gpio_probe(struct i2c_client *client,
 			      struct sx9500_data *data)
 {
 	struct device *dev;
-	struct gpio_desc *gpio;
 
 	if (!client)
 		return;
 
 	dev = &client->dev;
-
-	if (client->irq <= 0) {
-		gpio = devm_gpiod_get_index(dev, SX9500_GPIO_INT, 0, GPIOD_IN);
-		if (IS_ERR(gpio))
-			dev_err(dev, "gpio get irq failed\n");
-		else
-			client->irq = gpiod_to_irq(gpio);
-	}
 
 	data->gpiod_rst = devm_gpiod_get_index(dev, SX9500_GPIO_RESET,
 					       0, GPIOD_OUT_HIGH);

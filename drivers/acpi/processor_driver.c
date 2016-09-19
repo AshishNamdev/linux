@@ -90,7 +90,7 @@ static void acpi_processor_notify(acpi_handle handle, u32 event, void *data)
 						  pr->performance_platform_limit);
 		break;
 	case ACPI_PROCESSOR_NOTIFY_POWER:
-		acpi_processor_cst_has_changed(pr);
+		acpi_processor_power_state_has_changed(pr);
 		acpi_bus_generate_netlink_event(device->pnp.device_class,
 						  dev_name(&device->dev), event, 0);
 		break;
@@ -118,12 +118,13 @@ static int acpi_cpu_soft_notify(struct notifier_block *nfb,
 	struct acpi_device *device;
 	action &= ~CPU_TASKS_FROZEN;
 
-	/*
-	 * CPU_STARTING and CPU_DYING must not sleep. Return here since
-	 * acpi_bus_get_device() may sleep.
-	 */
-	if (action == CPU_STARTING || action == CPU_DYING)
+	switch (action) {
+	case CPU_ONLINE:
+	case CPU_DEAD:
+		break;
+	default:
 		return NOTIFY_DONE;
+	}
 
 	if (!pr || acpi_bus_get_device(pr->handle, &device))
 		return NOTIFY_DONE;
@@ -200,7 +201,8 @@ static int acpi_pss_perf_init(struct acpi_processor *pr,
 		goto err_remove_sysfs_thermal;
 	}
 
-	sysfs_remove_link(&pr->cdev->device.kobj, "device");
+	return 0;
+
  err_remove_sysfs_thermal:
 	sysfs_remove_link(&device->dev.kobj, "thermal_cooling");
  err_thermal_unregister:
@@ -241,6 +243,10 @@ static int __acpi_processor_start(struct acpi_device *device)
 
 	if (pr->flags.need_hotplug_init)
 		return 0;
+
+	result = acpi_cppc_processor_probe(pr);
+	if (result)
+		return -ENODEV;
 
 	if (!cpuidle_get_driver() || cpuidle_get_driver() == &acpi_idle_driver)
 		acpi_processor_power_init(pr);
@@ -287,6 +293,8 @@ static int acpi_processor_stop(struct device *dev)
 
 	acpi_pss_perf_exit(pr, device);
 
+	acpi_cppc_processor_exit(pr);
+
 	return 0;
 }
 
@@ -307,7 +315,6 @@ static int __init acpi_processor_driver_init(void)
 	if (result < 0)
 		return result;
 
-	acpi_processor_syscore_init();
 	register_hotcpu_notifier(&acpi_cpu_notifier);
 	acpi_thermal_cpufreq_init();
 	acpi_processor_ppc_init();
@@ -323,7 +330,6 @@ static void __exit acpi_processor_driver_exit(void)
 	acpi_processor_ppc_exit();
 	acpi_thermal_cpufreq_exit();
 	unregister_hotcpu_notifier(&acpi_cpu_notifier);
-	acpi_processor_syscore_exit();
 	driver_unregister(&acpi_processor_driver);
 }
 
