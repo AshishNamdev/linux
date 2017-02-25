@@ -41,6 +41,8 @@ static const u64 __perf_magic2_sw = 0x50455246494c4532ULL;
 
 #define PERF_MAGIC	__perf_magic2
 
+const char perf_version_string[] = PERF_VERSION;
+
 struct perf_file_attr {
 	struct perf_event_attr	attr;
 	struct perf_file_section	ids;
@@ -828,8 +830,7 @@ static int write_group_desc(int fd, struct perf_header *h __maybe_unused,
  * default get_cpuid(): nothing gets recorded
  * actual implementation must be in arch/$(ARCH)/util/header.c
  */
-int __attribute__ ((weak)) get_cpuid(char *buffer __maybe_unused,
-				     size_t sz __maybe_unused)
+int __weak get_cpuid(char *buffer __maybe_unused, size_t sz __maybe_unused)
 {
 	return -1;
 }
@@ -1896,7 +1897,6 @@ static int process_numa_topology(struct perf_file_section *section __maybe_unuse
 	if (ph->needs_swap)
 		nr = bswap_32(nr);
 
-	ph->env.nr_numa_nodes = nr;
 	nodes = zalloc(sizeof(*nodes) * nr);
 	if (!nodes)
 		return -ENOMEM;
@@ -1933,6 +1933,7 @@ static int process_numa_topology(struct perf_file_section *section __maybe_unuse
 
 		free(str);
 	}
+	ph->env.nr_numa_nodes = nr;
 	ph->env.numa_nodes = nodes;
 	return 0;
 
@@ -2251,11 +2252,28 @@ int perf_header__fprintf_info(struct perf_session *session, FILE *fp, bool full)
 	struct header_print_data hd;
 	struct perf_header *header = &session->header;
 	int fd = perf_data_file__fd(session->file);
+	struct stat st;
+	int ret, bit;
+
 	hd.fp = fp;
 	hd.full = full;
 
+	ret = fstat(fd, &st);
+	if (ret == -1)
+		return -1;
+
+	fprintf(fp, "# captured on: %s", ctime(&st.st_ctime));
+
 	perf_header__process_sections(header, fd, &hd,
 				      perf_file_section__fprintf_info);
+
+	fprintf(fp, "# missing features: ");
+	for_each_clear_bit(bit, header->adds_features, HEADER_LAST_FEATURE) {
+		if (bit)
+			fprintf(fp, "%s ", feat_ops[bit].name);
+	}
+
+	fprintf(fp, "\n");
 	return 0;
 }
 
@@ -2274,7 +2292,7 @@ static int do_write_feat(int fd, struct perf_header *h, int type,
 
 		err = feat_ops[type].write(fd, h, evlist);
 		if (err < 0) {
-			pr_debug("failed to write feature %d\n", type);
+			pr_debug("failed to write feature %s\n", feat_ops[type].name);
 
 			/* undo anything written */
 			lseek(fd, (*p)->offset, SEEK_SET);
@@ -2785,8 +2803,10 @@ static int perf_evsel__prepare_tracepoint_event(struct perf_evsel *evsel,
 	}
 
 	event = pevent_find_event(pevent, evsel->attr.config);
-	if (event == NULL)
+	if (event == NULL) {
+		pr_debug("cannot find event format for %d\n", (int)evsel->attr.config);
 		return -1;
+	}
 
 	if (!evsel->name) {
 		snprintf(bf, sizeof(bf), "%s:%s", event->system, event->name);
@@ -3185,6 +3205,7 @@ int perf_event__process_event_update(struct perf_tool *tool __maybe_unused,
 	case PERF_EVENT_UPDATE__SCALE:
 		ev_scale = (struct event_update_event_scale *) ev->data;
 		evsel->scale = ev_scale->scale;
+		break;
 	case PERF_EVENT_UPDATE__CPUS:
 		ev_cpus = (struct event_update_event_cpus *) ev->data;
 

@@ -1129,6 +1129,7 @@ static int pci_configure_afu(struct cxl_afu *afu, struct cxl *adapter, struct pc
 	if ((rc = cxl_native_register_psl_irq(afu)))
 		goto err2;
 
+	up_write(&afu->configured_rwsem);
 	return 0;
 
 err2:
@@ -1141,6 +1142,7 @@ err1:
 
 static void pci_deconfigure_afu(struct cxl_afu *afu)
 {
+	down_write(&afu->configured_rwsem);
 	cxl_native_release_psl_irq(afu);
 	if (afu->adapter->native->sl_ops->release_serr_irq)
 		afu->adapter->native->sl_ops->release_serr_irq(afu);
@@ -1238,6 +1240,9 @@ int cxl_pci_reset(struct cxl *adapter)
 	}
 
 	dev_info(&dev->dev, "CXL reset\n");
+
+	/* the adapter is about to be reset, so ignore errors */
+	cxl_data_cache_flush(adapter);
 
 	/* pcie_warm_reset requests a fundamental pci reset which includes a
 	 * PERST assert/deassert.  PERST triggers a loading of the image
@@ -1484,6 +1489,8 @@ static int cxl_configure_adapter(struct cxl *adapter, struct pci_dev *dev)
 	if ((rc = cxl_native_register_psl_err_irq(adapter)))
 		goto err;
 
+	/* Release the context lock as adapter is configured */
+	cxl_adapter_context_unlock(adapter);
 	return 0;
 
 err:
@@ -1530,11 +1537,11 @@ static void set_sl_ops(struct cxl *adapter, struct pci_dev *dev)
 {
 	if (dev->vendor == PCI_VENDOR_ID_MELLANOX && dev->device == 0x1013) {
 		/* Mellanox CX-4 */
-		dev_info(&adapter->dev, "Device uses an XSL\n");
+		dev_info(&dev->dev, "Device uses an XSL\n");
 		adapter->native->sl_ops = &xsl_ops;
 		adapter->min_pe = 1; /* Workaround for CX-4 hardware bug */
 	} else {
-		dev_info(&adapter->dev, "Device uses a PSL\n");
+		dev_info(&dev->dev, "Device uses a PSL\n");
 		adapter->native->sl_ops = &psl_ops;
 	}
 }
@@ -1604,6 +1611,9 @@ static void cxl_pci_remove_adapter(struct cxl *adapter)
 
 	cxl_sysfs_adapter_remove(adapter);
 	cxl_debugfs_adapter_remove(adapter);
+
+	/* Flush adapter datacache as its about to be removed */
+	cxl_data_cache_flush(adapter);
 
 	cxl_deconfigure_adapter(adapter);
 
@@ -1916,7 +1926,7 @@ static pci_ers_result_t cxl_pci_slot_reset(struct pci_dev *pdev)
 				goto err;
 
 			ctx = cxl_dev_context_init(afu_dev);
-			if (!ctx)
+			if (IS_ERR(ctx))
 				goto err;
 
 			afu_dev->dev.archdata.cxl_ctx = ctx;

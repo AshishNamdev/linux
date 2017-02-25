@@ -142,8 +142,10 @@ enum rt8973a_muic_acc_type {
 	RT8973A_MUIC_ADC_UNKNOWN_ACC_5,
 	RT8973A_MUIC_ADC_OPEN = 0x1f,
 
-	/* The below accessories has same ADC value (0x1f).
-	   So, Device type1 is used to separate specific accessory. */
+	/*
+	 * The below accessories has same ADC value (0x1f).
+	 * So, Device type1 is used to separate specific accessory.
+	 */
 					/* |---------|--ADC| */
 					/* |    [7:5]|[4:0]| */
 	RT8973A_MUIC_ADC_USB = 0x3f,	/* |      001|11111| */
@@ -398,9 +400,9 @@ static int rt8973a_muic_cable_handler(struct rt8973a_muic_info *info,
 		return ret;
 
 	/* Change the state of external accessory */
-	extcon_set_cable_state_(info->edev, id, attached);
+	extcon_set_state_sync(info->edev, id, attached);
 	if (id == EXTCON_USB)
-		extcon_set_cable_state_(info->edev, EXTCON_CHG_USB_SDP,
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_SDP,
 					attached);
 
 	return 0;

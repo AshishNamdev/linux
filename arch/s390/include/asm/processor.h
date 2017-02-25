@@ -110,14 +110,23 @@ typedef struct {
 struct thread_struct {
 	unsigned int  acrs[NUM_ACRS];
         unsigned long ksp;              /* kernel stack pointer             */
+	unsigned long user_timer;	/* task cputime in user space */
+	unsigned long guest_timer;	/* task cputime in kvm guest */
+	unsigned long system_timer;	/* task cputime in kernel space */
+	unsigned long hardirq_timer;	/* task cputime in hardirq context */
+	unsigned long softirq_timer;	/* task cputime in softirq context */
+	unsigned long sys_call_table;	/* system call table address */
 	mm_segment_t mm_segment;
 	unsigned long gmap_addr;	/* address of last gmap fault. */
 	unsigned int gmap_write_flag;	/* gmap fault write indication */
 	unsigned int gmap_int_code;	/* int code of last gmap fault */
 	unsigned int gmap_pfault;	/* signal of a pending guest pfault */
+	/* Per-thread information related to debugging */
 	struct per_regs per_user;	/* User specified PER registers */
 	struct per_event per_event;	/* Cause of the last PER trap */
 	unsigned long per_flags;	/* Flags to control debug behavior */
+	unsigned int system_call;	/* system call number in signal */
+	unsigned long last_break;	/* last breaking-event-address. */
         /* pfault_wait is used to block the process on a pfault event */
 	unsigned long pfault_wait;
 	struct list_head list;
@@ -192,7 +201,7 @@ struct task_struct;
 struct mm_struct;
 struct seq_file;
 
-typedef int (*dump_trace_func_t)(void *data, unsigned long address);
+typedef int (*dump_trace_func_t)(void *data, unsigned long address, int reliable);
 void dump_trace(dump_trace_func_t func, void *data,
 		struct task_struct *task, unsigned long sp);
 
@@ -234,9 +243,10 @@ static inline unsigned short stap(void)
 /*
  * Give up the time slice of the virtual PU.
  */
-void cpu_relax(void);
+#define cpu_relax_yield cpu_relax_yield
+void cpu_relax_yield(void);
 
-#define cpu_relax_lowlatency()  barrier()
+#define cpu_relax() barrier()
 
 #define ECAG_CACHE_ATTRIBUTE	0
 #define ECAG_CPU_ATTRIBUTE	1
@@ -351,12 +361,12 @@ extern void (*s390_base_ext_handler_fn)(void);
 extern int memcpy_real(void *, void *, size_t);
 extern void memcpy_absolute(void *, void *, size_t);
 
-#define mem_assign_absolute(dest, val) {			\
+#define mem_assign_absolute(dest, val) do {			\
 	__typeof__(dest) __tmp = (val);				\
 								\
 	BUILD_BUG_ON(sizeof(__tmp) != sizeof(val));		\
 	memcpy_absolute(&(dest), &__tmp, sizeof(__tmp));	\
-}
+} while (0)
 
 #endif /* __ASSEMBLY__ */
 

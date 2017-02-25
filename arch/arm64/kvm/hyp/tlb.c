@@ -16,8 +16,9 @@
  */
 
 #include <asm/kvm_hyp.h>
+#include <asm/tlbflush.h>
 
-static void __hyp_text __tlb_flush_vmid_ipa(struct kvm *kvm, phys_addr_t ipa)
+void __hyp_text __kvm_tlb_flush_vmid_ipa(struct kvm *kvm, phys_addr_t ipa)
 {
 	dsb(ishst);
 
@@ -32,7 +33,7 @@ static void __hyp_text __tlb_flush_vmid_ipa(struct kvm *kvm, phys_addr_t ipa)
 	 * whole of Stage-1. Weep...
 	 */
 	ipa >>= 12;
-	asm volatile("tlbi ipas2e1is, %0" : : "r" (ipa));
+	__tlbi(ipas2e1is, ipa);
 
 	/*
 	 * We have to ensure completion of the invalidation at Stage-2,
@@ -41,17 +42,14 @@ static void __hyp_text __tlb_flush_vmid_ipa(struct kvm *kvm, phys_addr_t ipa)
 	 * the Stage-1 invalidation happened first.
 	 */
 	dsb(ish);
-	asm volatile("tlbi vmalle1is" : : );
+	__tlbi(vmalle1is);
 	dsb(ish);
 	isb();
 
 	write_sysreg(0, vttbr_el2);
 }
 
-__alias(__tlb_flush_vmid_ipa) void __kvm_tlb_flush_vmid_ipa(struct kvm *kvm,
-							    phys_addr_t ipa);
-
-static void __hyp_text __tlb_flush_vmid(struct kvm *kvm)
+void __hyp_text __kvm_tlb_flush_vmid(struct kvm *kvm)
 {
 	dsb(ishst);
 
@@ -60,21 +58,32 @@ static void __hyp_text __tlb_flush_vmid(struct kvm *kvm)
 	write_sysreg(kvm->arch.vttbr, vttbr_el2);
 	isb();
 
-	asm volatile("tlbi vmalls12e1is" : : );
+	__tlbi(vmalls12e1is);
 	dsb(ish);
 	isb();
 
 	write_sysreg(0, vttbr_el2);
 }
 
-__alias(__tlb_flush_vmid) void __kvm_tlb_flush_vmid(struct kvm *kvm);
-
-static void __hyp_text __tlb_flush_vm_context(void)
+void __hyp_text __kvm_tlb_flush_local_vmid(struct kvm_vcpu *vcpu)
 {
-	dsb(ishst);
-	asm volatile("tlbi alle1is	\n"
-		     "ic ialluis	  ": : );
-	dsb(ish);
+	struct kvm *kvm = kern_hyp_va(kern_hyp_va(vcpu)->kvm);
+
+	/* Switch to requested VMID */
+	write_sysreg(kvm->arch.vttbr, vttbr_el2);
+	isb();
+
+	__tlbi(vmalle1);
+	dsb(nsh);
+	isb();
+
+	write_sysreg(0, vttbr_el2);
 }
 
-__alias(__tlb_flush_vm_context) void __kvm_flush_vm_context(void);
+void __hyp_text __kvm_flush_vm_context(void)
+{
+	dsb(ishst);
+	__tlbi(alle1is);
+	asm volatile("ic ialluis" : : );
+	dsb(ish);
+}

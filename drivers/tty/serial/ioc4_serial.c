@@ -1082,7 +1082,7 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 		if (!port) {
 			printk(KERN_WARNING
 				"IOC4 serial memory not available for port\n");
-			return -ENOMEM;
+			goto free;
 		}
 		spin_lock_init(&port->ip_lock);
 
@@ -1190,6 +1190,11 @@ static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 				handle_dma_error_intr, port);
 	}
 	return 0;
+
+free:
+	while (port_number)
+		kfree(ports[--port_number]);
+	return -ENOMEM;
 }
 
 /**
@@ -2591,7 +2596,7 @@ static int ic4_request_port(struct uart_port *port)
 
 /* Associate the uart functions above - given to serial core */
 
-static struct uart_ops ioc4_ops = {
+static const struct uart_ops ioc4_ops = {
 	.tx_empty	= ic4_tx_empty,
 	.set_mctrl	= ic4_set_mctrl,
 	.get_mctrl	= ic4_get_mctrl,

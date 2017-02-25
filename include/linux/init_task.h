@@ -15,6 +15,8 @@
 #include <net/net_namespace.h>
 #include <linux/sched/rt.h>
 
+#include <asm/thread_info.h>
+
 #ifdef CONFIG_SMP
 # define INIT_PUSHABLE_TASKS(tsk)					\
 	.pushable_tasks = PLIST_NODE_INIT(tsk.pushable_tasks, MAX_PRIO),
@@ -40,6 +42,27 @@ extern struct fs_struct init_fs;
 #define INIT_PREV_CPUTIME(x)
 #endif
 
+#ifdef CONFIG_POSIX_TIMERS
+#define INIT_POSIX_TIMERS(s)						\
+	.posix_timers = LIST_HEAD_INIT(s.posix_timers),
+#define INIT_CPU_TIMERS(s)						\
+	.cpu_timers = {							\
+		LIST_HEAD_INIT(s.cpu_timers[0]),			\
+		LIST_HEAD_INIT(s.cpu_timers[1]),			\
+		LIST_HEAD_INIT(s.cpu_timers[2]),								\
+	},
+#define INIT_CPUTIMER(s)						\
+	.cputimer	= { 						\
+		.cputime_atomic	= INIT_CPUTIME_ATOMIC,			\
+		.running	= false,				\
+		.checking_timer = false,				\
+	},
+#else
+#define INIT_POSIX_TIMERS(s)
+#define INIT_CPU_TIMERS(s)
+#define INIT_CPUTIMER(s)
+#endif
+
 #define INIT_SIGNALS(sig) {						\
 	.nr_threads	= 1,						\
 	.thread_head	= LIST_HEAD_INIT(init_task.thread_node),	\
@@ -47,14 +70,10 @@ extern struct fs_struct init_fs;
 	.shared_pending	= { 						\
 		.list = LIST_HEAD_INIT(sig.shared_pending.list),	\
 		.signal =  {{0}}},					\
-	.posix_timers	 = LIST_HEAD_INIT(sig.posix_timers),		\
-	.cpu_timers	= INIT_CPU_TIMERS(sig.cpu_timers),		\
+	INIT_POSIX_TIMERS(sig)						\
+	INIT_CPU_TIMERS(sig)						\
 	.rlim		= INIT_RLIMITS,					\
-	.cputimer	= { 						\
-		.cputime_atomic	= INIT_CPUTIME_ATOMIC,			\
-		.running	= false,				\
-		.checking_timer = false,				\
-	},								\
+	INIT_CPUTIMER(sig)						\
 	INIT_PREV_CPUTIME(sig)						\
 	.cred_guard_mutex =						\
 		 __MUTEX_INITIALIZER(sig.cred_guard_mutex),		\
@@ -183,12 +202,21 @@ extern struct task_group root_task_group;
 # define INIT_KASAN(tsk)
 #endif
 
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+# define INIT_TASK_TI(tsk)			\
+	.thread_info = INIT_THREAD_INFO(tsk),	\
+	.stack_refcount = ATOMIC_INIT(1),
+#else
+# define INIT_TASK_TI(tsk)
+#endif
+
 /*
  *  INIT_TASK is used to set up the first task table, touch at
  * your own risk!. Base=0, limit=0x1fffff (=2MB)
  */
 #define INIT_TASK(tsk)	\
 {									\
+	INIT_TASK_TI(tsk)						\
 	.state		= 0,						\
 	.stack		= init_stack,					\
 	.usage		= ATOMIC_INIT(2),				\
@@ -236,7 +264,7 @@ extern struct task_group root_task_group;
 	.blocked	= {{0}},					\
 	.alloc_lock	= __SPIN_LOCK_UNLOCKED(tsk.alloc_lock),		\
 	.journal_info	= NULL,						\
-	.cpu_timers	= INIT_CPU_TIMERS(tsk.cpu_timers),		\
+	INIT_CPU_TIMERS(tsk)						\
 	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(tsk.pi_lock),	\
 	.timer_slack_ns = 50000, /* 50 usec default slack */		\
 	.pids = {							\
@@ -262,13 +290,6 @@ extern struct task_group root_task_group;
 	INIT_KASAN(tsk)							\
 }
 
-
-#define INIT_CPU_TIMERS(cpu_timers)					\
-{									\
-	LIST_HEAD_INIT(cpu_timers[0]),					\
-	LIST_HEAD_INIT(cpu_timers[1]),					\
-	LIST_HEAD_INIT(cpu_timers[2]),					\
-}
 
 /* Attach to the init_task data structure for proper alignment */
 #define __init_task_data __attribute__((__section__(".data..init_task")))

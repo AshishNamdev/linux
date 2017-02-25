@@ -27,7 +27,11 @@ extern void __chk_user_ptr(const volatile void __user *);
 extern void __chk_io_ptr(const volatile void __iomem *);
 # define ACCESS_PRIVATE(p, member) (*((typeof((p)->member) __force *) &(p)->member))
 #else /* __CHECKER__ */
-# define __user
+# ifdef STRUCTLEAK_PLUGIN
+#  define __user __attribute__((user))
+# else
+#  define __user
+# endif
 # define __kernel
 # define __safe
 # define __force
@@ -180,6 +184,29 @@ void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 /* Unreachable code */
 #ifndef unreachable
 # define unreachable() do { } while (1)
+#endif
+
+/*
+ * KENTRY - kernel entry point
+ * This can be used to annotate symbols (functions or data) that are used
+ * without their linker symbol being referenced explicitly. For example,
+ * interrupt vector handlers, or functions in the kernel image that are found
+ * programatically.
+ *
+ * Not required for symbols exported with EXPORT_SYMBOL, or initcalls. Those
+ * are handled in their own way (with KEEP() in linker scripts).
+ *
+ * KENTRY can be avoided if the symbols in question are marked as KEEP() in the
+ * linker script. For example an architecture could KEEP() its entire
+ * boot/exception vector code rather than annotate each function and data.
+ */
+#ifndef KENTRY
+# define KENTRY(sym)						\
+	extern typeof(sym) sym;					\
+	static const unsigned long __kentry_##sym		\
+	__used							\
+	__attribute__((section("___kentry" "+" #sym ), used))	\
+	= (unsigned long)&sym;
 #endif
 
 #ifndef RELOC_HIDE
@@ -404,6 +431,10 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
  */
 #ifndef __attribute_const__
 # define __attribute_const__	/* unimplemented */
+#endif
+
+#ifndef __latent_entropy
+# define __latent_entropy
 #endif
 
 /*

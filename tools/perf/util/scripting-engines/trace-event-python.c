@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <linux/bitmap.h>
+#include <linux/time64.h>
 
 #include "../../perf.h"
 #include "../debug.h"
@@ -235,6 +236,7 @@ static void define_event_symbols(struct event_format *event,
 			      cur_field_name);
 		break;
 	case PRINT_HEX:
+	case PRINT_HEX_STR:
 		define_event_symbols(event, ev_name, args->hex.field);
 		define_event_symbols(event, ev_name, args->hex.size);
 		break;
@@ -426,8 +428,8 @@ static void python_process_tracepoint(struct perf_sample *sample,
 		if (!dict)
 			Py_FatalError("couldn't create Python dict");
 	}
-	s = nsecs / NSECS_PER_SEC;
-	ns = nsecs - s * NSECS_PER_SEC;
+	s = nsecs / NSEC_PER_SEC;
+	ns = nsecs - s * NSEC_PER_SEC;
 
 	scripting_context->event_data = data;
 	scripting_context->pevent = evsel->tp_format->pevent;

@@ -373,7 +373,7 @@ void ipte_unlock(struct kvm_vcpu *vcpu)
 		ipte_unlock_simple(vcpu);
 }
 
-static int ar_translation(struct kvm_vcpu *vcpu, union asce *asce, ar_t ar,
+static int ar_translation(struct kvm_vcpu *vcpu, union asce *asce, u8 ar,
 			  enum gacc_mode mode)
 {
 	union alet alet;
@@ -465,7 +465,9 @@ static int ar_translation(struct kvm_vcpu *vcpu, union asce *asce, ar_t ar,
 struct trans_exc_code_bits {
 	unsigned long addr : 52; /* Translation-exception Address */
 	unsigned long fsi  : 2;  /* Access Exception Fetch/Store Indication */
-	unsigned long	   : 6;
+	unsigned long	   : 2;
+	unsigned long b56  : 1;
+	unsigned long	   : 3;
 	unsigned long b60  : 1;
 	unsigned long b61  : 1;
 	unsigned long as   : 2;  /* ASCE Identifier */
@@ -485,7 +487,7 @@ enum prot_type {
 };
 
 static int trans_exc(struct kvm_vcpu *vcpu, int code, unsigned long gva,
-		     ar_t ar, enum gacc_mode mode, enum prot_type prot)
+		     u8 ar, enum gacc_mode mode, enum prot_type prot)
 {
 	struct kvm_s390_pgm_info *pgm = &vcpu->arch.pgm;
 	struct trans_exc_code_bits *tec;
@@ -495,6 +497,22 @@ static int trans_exc(struct kvm_vcpu *vcpu, int code, unsigned long gva,
 	tec = (struct trans_exc_code_bits *)&pgm->trans_exc_code;
 
 	switch (code) {
+	case PGM_PROTECTION:
+		switch (prot) {
+		case PROT_TYPE_LA:
+			tec->b56 = 1;
+			break;
+		case PROT_TYPE_KEYC:
+			tec->b60 = 1;
+			break;
+		case PROT_TYPE_ALC:
+			tec->b60 = 1;
+			/* FALL THROUGH */
+		case PROT_TYPE_DAT:
+			tec->b61 = 1;
+			break;
+		}
+		/* FALL THROUGH */
 	case PGM_ASCE_TYPE:
 	case PGM_PAGE_TRANSLATION:
 	case PGM_REGION_FIRST_TRANS:
@@ -504,8 +522,7 @@ static int trans_exc(struct kvm_vcpu *vcpu, int code, unsigned long gva,
 		/*
 		 * op_access_id only applies to MOVE_PAGE -> set bit 61
 		 * exc_access_id has to be set to 0 for some instructions. Both
-		 * cases have to be handled by the caller. We can always store
-		 * exc_access_id, as it is undefined for non-ar cases.
+		 * cases have to be handled by the caller.
 		 */
 		tec->addr = gva >> PAGE_SHIFT;
 		tec->fsi = mode == GACC_STORE ? FSI_STORE : FSI_FETCH;
@@ -516,31 +533,19 @@ static int trans_exc(struct kvm_vcpu *vcpu, int code, unsigned long gva,
 	case PGM_ASTE_VALIDITY:
 	case PGM_ASTE_SEQUENCE:
 	case PGM_EXTENDED_AUTHORITY:
+		/*
+		 * We can always store exc_access_id, as it is
+		 * undefined for non-ar cases. It is undefined for
+		 * most DAT protection exceptions.
+		 */
 		pgm->exc_access_id = ar;
-		break;
-	case PGM_PROTECTION:
-		switch (prot) {
-		case PROT_TYPE_ALC:
-			tec->b60 = 1;
-			/* FALL THROUGH */
-		case PROT_TYPE_DAT:
-			tec->b61 = 1;
-			tec->addr = gva >> PAGE_SHIFT;
-			tec->fsi = mode == GACC_STORE ? FSI_STORE : FSI_FETCH;
-			tec->as = psw_bits(vcpu->arch.sie_block->gpsw).as;
-			/* exc_access_id is undefined for most cases */
-			pgm->exc_access_id = ar;
-			break;
-		default: /* LA and KEYC set b61 to 0, other params undefined */
-			break;
-		}
 		break;
 	}
 	return code;
 }
 
 static int get_vcpu_asce(struct kvm_vcpu *vcpu, union asce *asce,
-			 unsigned long ga, ar_t ar, enum gacc_mode mode)
+			 unsigned long ga, u8 ar, enum gacc_mode mode)
 {
 	int rc;
 	struct psw_bits psw = psw_bits(vcpu->arch.sie_block->gpsw);
@@ -772,7 +777,7 @@ static int low_address_protection_enabled(struct kvm_vcpu *vcpu,
 	return 1;
 }
 
-static int guest_page_range(struct kvm_vcpu *vcpu, unsigned long ga, ar_t ar,
+static int guest_page_range(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar,
 			    unsigned long *pages, unsigned long nr_pages,
 			    const union asce asce, enum gacc_mode mode)
 {
@@ -804,7 +809,7 @@ static int guest_page_range(struct kvm_vcpu *vcpu, unsigned long ga, ar_t ar,
 	return 0;
 }
 
-int access_guest(struct kvm_vcpu *vcpu, unsigned long ga, ar_t ar, void *data,
+int access_guest(struct kvm_vcpu *vcpu, unsigned long ga, u8 ar, void *data,
 		 unsigned long len, enum gacc_mode mode)
 {
 	psw_t *psw = &vcpu->arch.sie_block->gpsw;
@@ -878,7 +883,7 @@ int access_guest_real(struct kvm_vcpu *vcpu, unsigned long gra,
  * Note: The IPTE lock is not taken during this function, so the caller
  * has to take care of this.
  */
-int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, ar_t ar,
+int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 			    unsigned long *gpa, enum gacc_mode mode)
 {
 	psw_t *psw = &vcpu->arch.sie_block->gpsw;
@@ -911,7 +916,7 @@ int guest_translate_address(struct kvm_vcpu *vcpu, unsigned long gva, ar_t ar,
 /**
  * check_gva_range - test a range of guest virtual addresses for accessibility
  */
-int check_gva_range(struct kvm_vcpu *vcpu, unsigned long gva, ar_t ar,
+int check_gva_range(struct kvm_vcpu *vcpu, unsigned long gva, u8 ar,
 		    unsigned long length, enum gacc_mode mode)
 {
 	unsigned long gpa;

@@ -254,11 +254,8 @@ static int add_client_context(struct ib_device *device, struct ib_client *client
 	unsigned long flags;
 
 	context = kmalloc(sizeof *context, GFP_KERNEL);
-	if (!context) {
-		pr_warn("Couldn't allocate client context for %s/%s\n",
-			device->name, client->name);
+	if (!context)
 		return -ENOMEM;
-	}
 
 	context->client = client;
 	context->data   = NULL;
@@ -662,7 +659,7 @@ int ib_query_port(struct ib_device *device,
 	union ib_gid gid;
 	int err;
 
-	if (port_num < rdma_start_port(device) || port_num > rdma_end_port(device))
+	if (!rdma_is_port_valid(device, port_num))
 		return -EINVAL;
 
 	memset(port_attr, 0, sizeof(*port_attr));
@@ -828,7 +825,7 @@ int ib_modify_port(struct ib_device *device,
 	if (!device->modify_port)
 		return -ENOSYS;
 
-	if (port_num < rdma_start_port(device) || port_num > rdma_end_port(device))
+	if (!rdma_is_port_valid(device, port_num))
 		return -EINVAL;
 
 	return device->modify_port(device, port_num, port_modify_mask,

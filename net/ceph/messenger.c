@@ -1393,15 +1393,9 @@ static struct ceph_auth_handshake *get_connect_authorizer(struct ceph_connection
 		return NULL;
 	}
 
-	/* Can't hold the mutex while getting authorizer */
-	mutex_unlock(&con->mutex);
 	auth = con->ops->get_authorizer(con, auth_proto, con->auth_retry);
-	mutex_lock(&con->mutex);
-
 	if (IS_ERR(auth))
 		return auth;
-	if (con->state != CON_STATE_NEGOTIATING)
-		return ERR_PTR(-EAGAIN);
 
 	con->auth_reply_buf = auth->authorizer_reply_buf;
 	con->auth_reply_buf_len = auth->authorizer_reply_buf_len;
@@ -2026,6 +2020,19 @@ static int process_connect(struct ceph_connection *con)
 	int ret;
 
 	dout("process_connect on %p tag %d\n", con, (int)con->in_tag);
+
+	if (con->auth_reply_buf) {
+		/*
+		 * Any connection that defines ->get_authorizer()
+		 * should also define ->verify_authorizer_reply().
+		 * See get_connect_authorizer().
+		 */
+		ret = con->ops->verify_authorizer_reply(con);
+		if (ret < 0) {
+			con->error_msg = "bad authorize reply";
+			return ret;
+		}
+	}
 
 	switch (con->in_reply.tag) {
 	case CEPH_MSGR_TAG_FEATURES:
@@ -3418,7 +3425,7 @@ static void ceph_msg_release(struct kref *kref)
 struct ceph_msg *ceph_msg_get(struct ceph_msg *msg)
 {
 	dout("%s %p (was %d)\n", __func__, msg,
-	     atomic_read(&msg->kref.refcount));
+	     kref_read(&msg->kref));
 	kref_get(&msg->kref);
 	return msg;
 }
@@ -3427,7 +3434,7 @@ EXPORT_SYMBOL(ceph_msg_get);
 void ceph_msg_put(struct ceph_msg *msg)
 {
 	dout("%s %p (was %d)\n", __func__, msg,
-	     atomic_read(&msg->kref.refcount));
+	     kref_read(&msg->kref));
 	kref_put(&msg->kref, ceph_msg_release);
 }
 EXPORT_SYMBOL(ceph_msg_put);

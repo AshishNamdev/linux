@@ -27,6 +27,8 @@
 #include <linux/mmc/sdio_func.h>
 
 #include "sdio_ops.h"
+#include "core.h"
+#include "card.h"
 
 static int process_sdio_pending_irqs(struct mmc_host *host)
 {
@@ -214,7 +216,9 @@ static int sdio_card_irq_put(struct mmc_card *card)
 	struct mmc_host *host = card->host;
 
 	WARN_ON(!host->claimed);
-	BUG_ON(host->sdio_irqs < 1);
+
+	if (host->sdio_irqs < 1)
+		return -EINVAL;
 
 	if (!--host->sdio_irqs) {
 		if (!(host->caps2 & MMC_CAP2_SDIO_IRQ_NOTHREAD)) {
@@ -261,8 +265,8 @@ int sdio_claim_irq(struct sdio_func *func, sdio_irq_handler_t *handler)
 	int ret;
 	unsigned char reg;
 
-	BUG_ON(!func);
-	BUG_ON(!func->card);
+	if (!func)
+		return -EINVAL;
 
 	pr_debug("SDIO: Enabling IRQ for %s...\n", sdio_func_id(func));
 
@@ -304,8 +308,8 @@ int sdio_release_irq(struct sdio_func *func)
 	int ret;
 	unsigned char reg;
 
-	BUG_ON(!func);
-	BUG_ON(!func->card);
+	if (!func)
+		return -EINVAL;
 
 	pr_debug("SDIO: Disabling IRQ for %s...\n", sdio_func_id(func));
 

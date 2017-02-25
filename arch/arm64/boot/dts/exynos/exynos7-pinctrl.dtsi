@@ -20,8 +20,14 @@
 		interrupt-controller;
 		interrupt-parent = <&gic>;
 		#interrupt-cells = <2>;
-		interrupts = <0 0 0>, <0 1 0>, <0 2 0>, <0 3 0>,
-			     <0 4 0>, <0 5 0>, <0 6 0>, <0 7 0>;
+		interrupts = <GIC_SPI 0 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 1 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
 	};
 
 	gpa1: gpa1 {
@@ -31,8 +37,14 @@
 		interrupt-controller;
 		interrupt-parent = <&gic>;
 		#interrupt-cells = <2>;
-		interrupts = <0 8 0>, <0 9 0>, <0 10 0>, <0 11 0>,
-			     <0 12 0>, <0 13 0>, <0 14 0>, <0 15 0>;
+		interrupts = <GIC_SPI 8 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 10 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 12 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 13 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 14 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>;
 	};
 
 	gpa2: gpa2 {
@@ -485,49 +497,49 @@
 		samsung,pins = "gpr0-0";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <0>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_cmd: sd0-cmd {
 		samsung,pins = "gpr0-1";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <3>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_ds: sd0-ds {
 		samsung,pins = "gpr0-2";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <1>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_qrdy: sd0-qrdy {
 		samsung,pins = "gpr0-3";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <1>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_bus1: sd0-bus-width1 {
 		samsung,pins = "gpr1-0";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <3>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_bus4: sd0-bus-width4 {
 		samsung,pins = "gpr1-1", "gpr1-2", "gpr1-3";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <3>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd0_bus8: sd0-bus-width8 {
 		samsung,pins = "gpr1-4", "gpr1-5", "gpr1-6", "gpr1-7";
 		samsung,pin-function = <2>;
 		samsung,pin-pud = <3>;
-		samsung,pin-drv = <3>;
+		samsung,pin-drv = <4>;
 	};
 
 	sd1_clk: sd1-clk {

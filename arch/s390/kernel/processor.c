@@ -32,7 +32,7 @@ static bool machine_has_cpu_mhz;
 void __init cpu_detect_mhz_feature(void)
 {
 	if (test_facility(34) && __ecag(ECAG_CPU_ATTRIBUTE, 0) != -1UL)
-		machine_has_cpu_mhz = 1;
+		machine_has_cpu_mhz = true;
 }
 
 static void update_cpu_mhz(void *arg)
@@ -53,7 +53,7 @@ void s390_update_cpu_mhz(void)
 		on_each_cpu(update_cpu_mhz, NULL, 0);
 }
 
-void notrace cpu_relax(void)
+void notrace cpu_relax_yield(void)
 {
 	if (!smp_cpu_mtid && MACHINE_HAS_DIAG44) {
 		diag_stat_inc(DIAG_STAT_X044);
@@ -61,7 +61,7 @@ void notrace cpu_relax(void)
 	}
 	barrier();
 }
-EXPORT_SYMBOL(cpu_relax);
+EXPORT_SYMBOL(cpu_relax_yield);
 
 /*
  * cpu_init - initializes state that is per-CPU.
@@ -92,7 +92,7 @@ static void show_cpu_summary(struct seq_file *m, void *v)
 {
 	static const char *hwcap_str[] = {
 		"esan3", "zarch", "stfle", "msa", "ldisp", "eimm", "dfp",
-		"edat", "etf3eh", "highgprs", "te", "vx"
+		"edat", "etf3eh", "highgprs", "te", "vx", "vxd", "vxe"
 	};
 	static const char * const int_hwcap_str[] = {
 		"sie"
